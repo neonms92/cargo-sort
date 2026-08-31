@@ -777,7 +777,20 @@ const ALIEN_BUTTON_MESSAGES=[
   "Oops.",
   "I did not mean to do that.",
 ];
-function createAlien(){
+const ALIEN_HIDE_MESSAGES=[
+  "Well, excuuuse me!",
+  "Your turn to hide!",
+  "A little privacy, please!",
+  "I was here first!",
+];
+const ALIEN_REDROP_MESSAGES=[
+  "Whee! Again!",
+  "Why here?",
+  "Again? Okay!",
+  "Round two!",
+  "Put me down. No wait, up!",
+];
+function createAlien(skipAvatarLoad){
   const sc = layout.spawnCircle;
   const ang = rand(0,TAU);
   const rr = sc.r*Math.sqrt(Math.random())*0.7;
@@ -801,9 +814,10 @@ function createAlien(){
     message:null, bubbleT:0,
     walkPhase:null, track:1, waitTimer:0, interactCooldown:0,
     greeted:false, fixitMode:false, buttonRolled:false, walksReverse:false,
+    hidingInBarrel:null, hideJumpOut:false,
   };
   alien.baseName = alien.name;
-  if(ALIEN_FACE_MODE==='gravatar') loadAlienAvatar(alien);
+  if(ALIEN_FACE_MODE==='gravatar' && !skipAvatarLoad) loadAlienAvatar(alien);
   return alien;
 }
 function trySpawnRandom(){
@@ -1109,13 +1123,21 @@ function maybeTriggerDuplicate(a){
   }
 }
 function duplicateAlien(parent){
-  const clone = createAlien();
+  const clone = createAlien(true); // skip its own avatar fetch — it inherits the parent's face below
   clone.baseName = parent.baseName || parent.name;
   if(!state.alienCloneCounters[clone.baseName]) state.alienCloneCounters[clone.baseName] = 2;
   const num = state.alienCloneCounters[clone.baseName]++;
   clone.name = clone.baseName + ' #' + num;
 
+  // Exact same face as the parent, whether that's the procedural generator's data
+  // or (in gravatar mode) the same already-loading/loaded image.
+  clone.face = parent.face;
+  clone.avatarImg = parent.avatarImg;
+  clone.avatarLoaded = parent.avatarLoaded;
+  clone.avatarFailed = parent.avatarFailed;
+
   clone.walksReverse = Math.random()<0.5;
+  clone.greeted = true;
   clone.state = 'settled';
   clone.interactCooldown = 0;
   clone.buttonRolled = false;
@@ -1142,6 +1164,30 @@ function duplicateAlien(parent){
   state.aliens.push(clone);
 }
 
+function maybeTriggerHide(a){
+  const eligible = [];
+  state.barrels.forEach((b,i)=>{ if(!b.sealed) eligible.push(i); });
+  if(eligible.length===0) return false;
+  if(Math.random()<0.05){
+    a.hidingInBarrel = choice(eligible);
+    a.walkPhase = 'hiding';
+    a.state = 'settled';
+    return true;
+  }
+  return false;
+}
+function evictAlienFromBarrel(a, idx){
+  a.hidingInBarrel = null;
+  const anchor = layout.barrels4[idx];
+  a.state = 'falling';
+  a.x = anchor.x; a.y = anchor.y - layout.barrelH*0.55;
+  a.baseX = a.x; a.baseY = a.y;
+  a.fvy = -90;
+  a.fvx = choice([-1,1]) * rand(40,90);
+  a.hideJumpOut = true;
+  a.walkPhase = null;
+}
+
 function pressRedButton(){
   if(state.phase!=='playing') return;
   if(state.irisTarget===1){
@@ -1158,6 +1204,9 @@ function pressRedButton(){
 }
 
 function handleBarrelDrop(idx, r){
+  const hidden = state.aliens.find(a=>a.hidingInBarrel===idx);
+  if(hidden) evictAlienFromBarrel(hidden, idx);
+
   const barrel=state.barrels[idx];
   if(barrel.sealed){
     r.state='falling'; r.fvy=0; return;
@@ -1215,10 +1264,13 @@ function sealBarrel(idx){
 
 function ejectBarrel(idx){
   if(state.phase!=='playing') return;
+  const hidden = state.aliens.find(a=>a.hidingInBarrel===idx);
+  if(hidden) evictAlienFromBarrel(hidden, idx);
   const barrel=state.barrels[idx];
   if(barrel.slots===0 || barrel.sealed) return;
   const anchor=layout.barrels4[idx];
   const n=barrel.slots;
+  const formerValue=barrel.value;
   barrel.value=null; barrel.text=null; barrel.slots=0; barrel.sealed=false;
   AudioEngine.eject();
   spawnEjectSpark(anchor.x, anchor.y-layout.barrelH*0.5);
@@ -1226,7 +1278,21 @@ function ejectBarrel(idx){
     setTimeout(()=>{
       const ang=rand(-0.5,0.5)-Math.PI/2;
       const sp=rand(160,260);
-      spawnEjectTrail(anchor.x+rand(-10,10), anchor.y-layout.barrelH*0.5, Math.cos(ang)*sp, Math.sin(ang)*sp, choice(ROCK_PALETTES));
+      const vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
+      const x=anchor.x+rand(-10,10), y=anchor.y-layout.barrelH*0.5;
+      if(state.irisOpen>0.5){
+        spawnEjectTrail(x, y, vx, vy, choice(ROCK_PALETTES));
+      } else {
+        // Iris closed — the rocks have nowhere to go. Spawn real rocks carrying the barrel's
+        // former concentration and fling them into the air; they land and stay fully sortable.
+        const newRock = createRock(formerValue, choice(['fraction','decimal','percent']));
+        newRock.x = x; newRock.y = y;
+        newRock.baseX = x; newRock.baseY = y;
+        newRock.state = 'falling';
+        newRock.fvx = vx;
+        newRock.fvy = vy;
+        state.rocks.push(newRock);
+      }
     }, i*90);
   }
   updateBarrelDots();
@@ -1308,10 +1374,15 @@ function update(){
     } else if(r.state==='falling'){
       r.fvy = (r.fvy||0) + 420*dt;
       r.y += r.fvy*dt;
+      r.x += (r.fvx||0)*dt;
       r.x = clamp(r.x, fb.x0, fb.x1);
+      const pTop = layout.iris.cy - layout.iris.r*0.2;
+      const pBottom = layout.floorBottom;
+      const pt = clamp((r.y-pTop)/(pBottom-pTop), 0, 1);
+      r.scale = lerp(0.62, 1.7, pt);
       const floorY = layout.floorBottom - r.size*0.4;
       if(r.y>=floorY){
-        r.y=floorY; r.fvy=0; r.state='settled'; r.baseX=r.x; r.baseY=r.y;
+        r.y=floorY; r.fvy=0; r.fvx=0; r.state='settled'; r.baseX=r.x; r.baseY=r.y;
       }
     } else if(r.state==='settled'){
       r.x = r.baseX;
@@ -1344,10 +1415,15 @@ function update(){
     } else if(a.state==='falling'){
       a.fvy = (a.fvy||0) + 420*dt;
       a.y += a.fvy*dt;
+      a.x += (a.fvx||0)*dt;
       a.x = clamp(a.x, fb.x0, fb.x1);
+      const pTop = layout.iris.cy - layout.iris.r*0.2;
+      const pBottom = layout.floorBottom;
+      const pt = clamp((a.y-pTop)/(pBottom-pTop), 0, 1);
+      a.scale = lerp(0.62, 1.7, pt);
       const floorY = layout.floorBottom - a.size*0.4;
       if(a.y>=floorY){
-        a.y=floorY; a.fvy=0; a.state='settled'; a.baseX=a.x; a.baseY=a.y;
+        a.y=floorY; a.fvy=0; a.fvx=0; a.state='settled'; a.baseX=a.x; a.baseY=a.y;
         if(a.fixitMode){
           a.fixitMode = false;
           a.message = choice(ALIEN_FIXIT_MESSAGES);
@@ -1357,11 +1433,22 @@ function update(){
           a.track = 1;
           a.targetScale = ALIEN_TRACK1_SCALE;
           a.interactCooldown = 0;
+        } else if(a.hideJumpOut){
+          a.hideJumpOut = false;
+          a.message = choice(ALIEN_HIDE_MESSAGES);
+          a.bubbleT = 3;
+          a.walkPhase = 'track1';
+          a.track = 1;
+          a.targetScale = ALIEN_TRACK1_SCALE;
+          a.interactCooldown = 0;
         } else {
           if(!a.greeted){
             a.message = choice(ALIEN_MESSAGES);
             a.bubbleT = 3.5;
             a.greeted = true;
+          } else {
+            a.message = choice(ALIEN_REDROP_MESSAGES);
+            a.bubbleT = 3;
           }
           // Every landing (first drop, or re-drop after being re-grabbed) starts a fresh walk on track 1.
           a.walkPhase = 'track1';
@@ -1386,11 +1473,20 @@ function update(){
             a.message = choice(ALIEN_GARBAGE_MESSAGES);
             a.bubbleT = 3;
             a.interactCooldown = 2;
-            const rx=nearRock.x, ry=nearRock.y;
-            removeRock(nearRock);
+            const gvx=rand(-70,70), gvy=-rand(150,230);
             AudioEngine.eject();
-            spawnEjectSpark(rx, ry-8);
-            spawnEjectTrail(rx, ry-8, rand(-70,70), -rand(150,230), nearRock.pal);
+            spawnEjectSpark(nearRock.x, nearRock.y-8);
+            if(state.irisOpen>0.5){
+              const rx=nearRock.x, ry=nearRock.y;
+              removeRock(nearRock);
+              spawnEjectTrail(rx, ry-8, gvx, gvy, nearRock.pal);
+            } else {
+              // Iris closed — the rock has nowhere to go. Keep it alive and just launch it
+              // with a much harder kick, so it arcs back down and lands, still fully sortable.
+              nearRock.state = 'falling';
+              nearRock.fvx = gvx;
+              nearRock.fvy = gvy*4;
+            }
           }
         }
 
@@ -1403,7 +1499,7 @@ function update(){
         }
       } else if(a.walkPhase==='gap'){
         a.waitTimer -= dt;
-        if(a.waitTimer<=0 && !maybeTriggerFixit(a)){
+        if(a.waitTimer<=0 && !maybeTriggerFixit(a) && !maybeTriggerHide(a)){
           maybeTriggerDuplicate(a);
           a.track = 2;
           a.walkPhase = 'track2';
@@ -1416,6 +1512,8 @@ function update(){
           a.x = a.baseX; a.y = a.baseY;
           a.buttonRolled = false;
         }
+      } else if(a.walkPhase==='hiding'){
+        // waiting silently inside its chosen barrel until a rock is dropped in — see handleBarrelDrop
       } else if(a.walkPhase==='track2'){
         a.baseX += ALIEN_TRACK2_SPEED*dt*(a.walksReverse?1:-1);
         a.baseY = layout.floorTop;
@@ -1652,7 +1750,7 @@ function draw(){
   drawBarrels();
   if(state.held) drawBeams();
   drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone'));
-  drawAlienList(state.aliens.filter(a=> a.state!=='floating' && a.state!=='ejected' && !(a.state==='settled' && a.walkPhase==='track2')));
+  drawAlienList(state.aliens.filter(a=> a.state!=='floating' && a.state!=='ejected' && a.walkPhase!=='hiding' && !(a.state==='settled' && a.walkPhase==='track2')));
   drawParticles();
   drawAlienBubbles();
 
