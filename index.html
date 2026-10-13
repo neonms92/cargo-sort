@@ -1711,11 +1711,13 @@ function update(){
         }
       } else if(a.walkPhase==='gap'){
         a.waitTimer -= dt;
-        // Anyone in a tower is locked into stacking behavior: no fixit, hide or duplicate.
+        // Anyone in a tower is locked into stacking behavior: no fixit or hide. Duplication
+        // is still allowed (the newborn spawns on its own), so it's rolled for every alien
+        // in the tower here, since riders never reach this checkpoint themselves.
         const stacked = alienInStack(a);
         if(a.waitTimer<=0 && (stacked ||
             (!maybeTriggerFixit(a) && !maybeTriggerHide(a) && !maybeTriggerStack(a)))){
-          if(!stacked) maybeTriggerDuplicate(a);
+          for(let c=a; c; c=c.rider) maybeTriggerDuplicate(c);
           a.track = 2;
           a.walkPhase = 'track2';
           a.targetScale = ALIEN_TRACK2_SCALE;
