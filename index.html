@@ -525,6 +525,7 @@ function computeLayout(){
   layout.frontBounds = {x0:W*0.08,x1:W*0.92,y0:layout.iris.cy-irisR*0.3,y1:layout.floorBottom-6};
   layout.toolbarTop = H-108;
   layout.redButton = {x: cx - irisR*1.35, y: layout.floorTop, r: 10};
+  layout.lever = {x: cx + irisR*1.35, y: layout.floorTop, h: 24};
 }
 
 const state={
@@ -538,6 +539,7 @@ const state={
   aliens:[],
   alienSpawnedThisSector:false,
   alienCloneCounters:{},
+  leverDown:false,
   particles:[],
   spawnTimer:0,
   held:null,
@@ -777,6 +779,14 @@ const ALIEN_BUTTON_MESSAGES=[
   "Oops.",
   "I did not mean to do that.",
 ];
+const ALIEN_LEVER_CHANCE = 0.5;
+const ALIEN_LEVER_MESSAGES=[
+  "Ooh, a lever!",
+  "Click clack!",
+  "Up? Down? Yes!",
+  "That light seems important.",
+  "Don't mind me.",
+];
 const ALIEN_HIDE_MESSAGES=[
   "Well, excuuuse me!",
   "Your turn to hide!",
@@ -784,7 +794,24 @@ const ALIEN_HIDE_MESSAGES=[
   "I was here first!",
 ];
 const ALIEN_CLIMB_CHANCE = 0.25;  // chance to climb the iris ring when reaching it on track 2
-const ALIEN_CLIMB_SPEED = ALIEN_TRACK2_SPEED; // px/s along the ring's arc
+const ALIEN_CLIMB_SPEED = ALIEN_TRACK2_SPEED; // px/s along the ring's arc (base, before variation)
+// Meandering walk: every 40-80px of travel an alien picks a new speed between the
+// current track's base speed and double it. Stored as a 1x-2x multiplier so the same
+// rule applies to track 1, track 2, and the iris climb, each against its own base.
+const ALIEN_WALK_MULT_MIN = 1, ALIEN_WALK_MULT_MAX = 2;
+const ALIEN_WALK_RECALC_MIN = 40, ALIEN_WALK_RECALC_MAX = 80;
+function rollAlienWalkSpeed(a){
+  a.walkMult = rand(ALIEN_WALK_MULT_MIN, ALIEN_WALK_MULT_MAX);
+  a.walkDistLeft = rand(ALIEN_WALK_RECALC_MIN, ALIEN_WALK_RECALC_MAX);
+}
+// Distance this alien covers this frame at the given base speed; counts down toward the
+// next speed recalculation.
+function alienWalkStep(a, baseSpeed, dt){
+  const d = baseSpeed * a.walkMult * dt;
+  a.walkDistLeft -= d;
+  if(a.walkDistLeft <= 0) rollAlienWalkSpeed(a);
+  return d;
+}
 const ALIEN_CLIMB_FALL_MESSAGES=[
   "Ahh!",
   "Catch me!",
@@ -822,21 +849,112 @@ function finishAlienClimb(a){
   a.baseY = layout.floorTop;
   a.x = a.baseX; a.y = a.baseY;
 }
+// ---- Stacking ----
+// Aliens can form towers: each alien carries at most one rider (a chain, not a pyramid).
+// The bottom alien (the base) walks normally; everyone above follows it.
+const ALIEN_STACK_CHANCE = 0.10;
+function alienInStack(a){ return !!(a.rider || a.ridingOn); }
+function alienStackRoot(a){ let c=a; while(c.ridingOn) c=c.ridingOn; return c; }
+function alienStackLevel(a){ let n=0, c=a; while(c.ridingOn){ c=c.ridingOn; n++; } return n; }
+// Off-screen = in the gap between tracks, or riding a tower whose base is.
+function alienIsOffscreen(a){
+  const root = alienStackRoot(a);
+  return root.state==='settled' && root.walkPhase==='gap';
+}
+function maybeTriggerStack(a){
+  if(alienInStack(a)) return false;
+  const targets = state.aliens.filter(t=> t!==a && !t.rider && alienIsOffscreen(t));
+  if(targets.length===0 || Math.random()>=ALIEN_STACK_CHANCE) return false;
+  const target = choice(targets);
+  a.ridingOn = target;
+  target.rider = a;
+  a.walkPhase = 'riding';
+  a.state = 'settled';
+  a.x = target.x; a.y = target.y;
+  a.baseX = a.x; a.baseY = a.y;
+  return true;
+}
+// Give a group of falling aliens each their own sideways velocity, spread across the
+// range (with jitter, in shuffled order) so a collapsing tower always scatters into a
+// pile instead of occasionally dropping as a neat column.
+function scatterAlienVelocities(list){
+  const n = list.length;
+  const vxs = list.map((_,i)=> n===1
+    ? choice([-1,1]) * rand(30,100)
+    : lerp(-110, 110, i/(n-1)) + rand(-15,15));
+  for(let i=vxs.length-1;i>0;i--){ const j=randInt(0,i); [vxs[i],vxs[j]]=[vxs[j],vxs[i]]; }
+  list.forEach((a,i)=>{ a.fvx = vxs[i]; });
+}
+// Knock every alien above `a` off the tower; `a` and anything below it are unaffected.
+// Returns the aliens that fell.
+function tumbleRidersAbove(a, toTrack2){
+  const fallen = [];
+  let r = a.rider;
+  a.rider = null;
+  while(r){
+    const next = r.rider;
+    r.ridingOn = null; r.rider = null;
+    r.state = 'falling';
+    r.walkPhase = null;
+    r.fvy = -rand(20,80);
+    r.fallToTrack2 = toTrack2;
+    r.tumbled = true;
+    r.message = choice(ALIEN_CLIMB_FALL_MESSAGES);
+    r.bubbleT = 2.5;
+    fallen.push(r);
+    r = next;
+  }
+  scatterAlienVelocities(fallen);
+  return fallen;
+}
+// Called when the player grabs an alien: detach it from whatever it rides, and
+// everything above it falls off. Aliens below keep walking as a shorter tower.
+function breakStackAt(a){
+  const root = alienStackRoot(a);
+  const toTrack2 = isFarTrackAlien(root);
+  if(a.ridingOn){ a.ridingOn.rider = null; a.ridingOn = null; }
+  tumbleRidersAbove(a, toTrack2);
+}
+// Riders trail the alien beneath them with a lag, so the X offset compounds up the tower
+// and the top of a tall stack wobbles the most.
+const ALIEN_STACK_LAG = 6; // higher = tighter following
+function updateAlienStacks(dt){
+  state.aliens.forEach(base=>{
+    if(base.ridingOn || !base.rider) return;
+    let below = base, level = 1, r = base.rider;
+    while(r){
+      const targetX = below.x;
+      if(Math.abs(targetX - r.x) > W*0.3) r.x = targetX; // snap across track teleports
+      else r.x += (targetX - r.x) * Math.min(1, dt*ALIEN_STACK_LAG);
+      r.x += Math.sin(state.t*2.3 + r.phase) * 0.15 * level; // a little extra sway
+      r.scale = base.scale; r.targetScale = base.scale;
+      r.y = below.y - (below.size*below.scale + r.size*r.scale)*0.8;
+      r.baseX = r.x; r.baseY = r.y;
+      below = r; r = r.rider; level++;
+    }
+  });
+}
 // Aliens at track 2's depth (walking it, climbing the iris ring, or falling back onto it)
-// draw behind the barrels.
+// draw behind the barrels. Riders take their tower base's depth.
 function isFarTrackAlien(a){
+  if(a.state==='settled' && a.walkPhase==='riding') return isFarTrackAlien(alienStackRoot(a));
   return (a.state==='settled' && (a.walkPhase==='track2' || a.walkPhase==='climbing'))
       || (a.state==='falling' && a.fallToTrack2);
 }
+// Sector change: anything climbing the iris ring shouts and falls back to track 2,
+// bringing its whole tower down with it.
 function dropClimbingAliens(){
   state.aliens.forEach(a=>{
     if(a.state==='settled' && a.walkPhase==='climbing'){
+      const pile = [a, ...tumbleRidersAbove(a, true)];
       a.message = choice(ALIEN_CLIMB_FALL_MESSAGES);
       a.bubbleT = 2.5;
       a.state = 'falling';
       a.walkPhase = null;
-      a.fvy = 0; a.fvx = 0;
+      a.fvy = 0;
       a.fallToTrack2 = true;
+      a.tumbled = true;
+      scatterAlienVelocities(pile); // base and riders scatter together
     }
   });
 }
@@ -873,7 +991,11 @@ function createAlien(skipAvatarLoad){
     greeted:false, fixitMode:false, buttonRolled:false, walksReverse:false,
     hidingInBarrel:null, hideJumpOut:false,
     climbRolled:false, climbDir:0, climbAngle:0, climbSweep:0, climbProgress:0, fallToTrack2:false,
+    walkMult:1, walkDistLeft:0,
+    ridingOn:null, rider:null, tumbled:false,
+    leverRolled:false,
   };
+  rollAlienWalkSpeed(alien);
   alien.baseName = alien.name;
   if(ALIEN_FACE_MODE==='gravatar' && !skipAvatarLoad) loadAlienAvatar(alien);
   return alien;
@@ -1052,6 +1174,7 @@ function onDown(e){
   const a=hitAlien(pos);
   if(a){
     e.preventDefault();
+    breakStackAt(a); // everyone above tumbles off; anyone below keeps walking
     state.held=a;
     a.state='held';
     state.dragLast={x:pos.x,y:pos.y};
@@ -1066,6 +1189,13 @@ function onDown(e){
       ejectBarrel(i);
       break;
     }
+  }
+  const lev=layout.lever;
+  if(Math.hypot(pos.x-lev.x, pos.y-lev.y) < Math.max(lev.h*1.1, 24)){
+    e.preventDefault();
+    flipLever();
+    state.pointer.x=pos.x; state.pointer.y=pos.y; state.pointer.active=true;
+    return;
   }
   const btn=layout.redButton;
   if(Math.hypot(pos.x-btn.x, pos.y-btn.y) < Math.max(btn.r*1.6, 22)){
@@ -1199,6 +1329,7 @@ function duplicateAlien(parent){
   clone.state = 'settled';
   clone.interactCooldown = 0;
   clone.buttonRolled = false;
+  clone.leverRolled = false;
   clone.climbRolled = false;
   if(Math.random()<0.5){
     clone.track = 2;
@@ -1245,6 +1376,11 @@ function evictAlienFromBarrel(a, idx){
   a.fvx = choice([-1,1]) * rand(40,90);
   a.hideJumpOut = true;
   a.walkPhase = null;
+}
+
+// The lever does nothing at all except blink a red light while it's down.
+function flipLever(){
+  state.leverDown = !state.leverDown;
 }
 
 function pressRedButton(){
@@ -1483,6 +1619,7 @@ function update(){
           a.y=layout.floorTop; a.fvy=0; a.fvx=0; a.state='settled';
           a.baseX=a.x; a.baseY=a.y;
           a.fallToTrack2 = false;
+          a.tumbled = false;
           a.walkPhase = 'track2';
           a.track = 2;
           a.climbRolled = true; // already dealt with the ring this pass
@@ -1514,7 +1651,9 @@ function update(){
           a.targetScale = ALIEN_TRACK1_SCALE;
           a.interactCooldown = 0;
         } else {
-          if(!a.greeted){
+          if(a.tumbled){
+            a.tumbled = false; // already shouted on the way down
+          } else if(!a.greeted){
             a.message = choice(ALIEN_MESSAGES);
             a.bubbleT = 3.5;
             a.greeted = true;
@@ -1533,7 +1672,7 @@ function update(){
     } else if(a.state==='settled'){
       if(a.walkPhase==='track1'){
         a.scale = lerp(a.scale, a.targetScale, Math.min(1,dt*3));
-        a.baseX += ALIEN_TRACK1_SPEED*dt*(a.walksReverse?-1:1);
+        a.baseX += alienWalkStep(a, ALIEN_TRACK1_SPEED, dt)*(a.walksReverse?-1:1);
         a.baseY = layout.floorBottom - a.size*0.4;
         a.x = a.baseX;
         a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
@@ -1572,8 +1711,11 @@ function update(){
         }
       } else if(a.walkPhase==='gap'){
         a.waitTimer -= dt;
-        if(a.waitTimer<=0 && !maybeTriggerFixit(a) && !maybeTriggerHide(a)){
-          maybeTriggerDuplicate(a);
+        // Anyone in a tower is locked into stacking behavior: no fixit, hide or duplicate.
+        const stacked = alienInStack(a);
+        if(a.waitTimer<=0 && (stacked ||
+            (!maybeTriggerFixit(a) && !maybeTriggerHide(a) && !maybeTriggerStack(a)))){
+          if(!stacked) maybeTriggerDuplicate(a);
           a.track = 2;
           a.walkPhase = 'track2';
           a.targetScale = ALIEN_TRACK2_SCALE;
@@ -1584,11 +1726,14 @@ function update(){
             : W + a.size*a.scale + ALIEN_TRACK_EDGE_MARGIN;
           a.x = a.baseX; a.y = a.baseY;
           a.buttonRolled = false;
+          a.leverRolled = false;
           a.climbRolled = false;
         }
+      } else if(a.walkPhase==='riding'){
+        // Positioned each frame by updateAlienStacks, following the alien beneath it.
       } else if(a.walkPhase==='climbing'){
         const Rc = irisClimbRadius(a);
-        const dTheta = (ALIEN_CLIMB_SPEED/Rc)*dt;
+        const dTheta = alienWalkStep(a, ALIEN_CLIMB_SPEED, dt)/Rc;
         a.climbAngle += a.climbDir*dTheta;
         a.climbProgress += dTheta;
         if(a.climbProgress >= a.climbSweep){
@@ -1601,7 +1746,7 @@ function update(){
       } else if(a.walkPhase==='hiding'){
         // waiting silently inside its chosen barrel until a rock is dropped in — see handleBarrelDrop
       } else if(a.walkPhase==='track2'){
-        a.baseX += ALIEN_TRACK2_SPEED*dt*(a.walksReverse?1:-1);
+        a.baseX += alienWalkStep(a, ALIEN_TRACK2_SPEED, dt)*(a.walksReverse?1:-1);
         a.baseY = layout.floorTop;
         a.x = a.baseX;
         a.y = a.baseY + Math.sin(state.t*1.0+a.phase)*0.7;
@@ -1612,6 +1757,15 @@ function update(){
             a.message = choice(ALIEN_BUTTON_MESSAGES);
             a.bubbleT = 3;
             pressRedButton();
+          }
+        }
+
+        if(!a.leverRolled && Math.abs(a.baseX-layout.lever.x) < 14){
+          a.leverRolled = true;
+          if(Math.random()<ALIEN_LEVER_CHANCE){
+            a.message = choice(ALIEN_LEVER_MESSAGES);
+            a.bubbleT = 3;
+            flipLever();
           }
         }
 
@@ -1632,7 +1786,7 @@ function update(){
         const track2Exited = a.walksReverse
           ? (a.baseX - a.size*a.scale > W + ALIEN_TRACK_EDGE_MARGIN)
           : (a.baseX + a.size*a.scale < -ALIEN_TRACK_EDGE_MARGIN);
-        if(track2Exited && !maybeTriggerFixit(a)){
+        if(track2Exited && (alienInStack(a) || !maybeTriggerFixit(a))){
           a.track = 1;
           a.walkPhase = 'track1';
           a.targetScale = ALIEN_TRACK1_SCALE;
@@ -1656,6 +1810,7 @@ function update(){
     }
     if(a.bubbleT>0) a.bubbleT = Math.max(0, a.bubbleT-dt);
   }
+  updateAlienStacks(dt);
   state.aliens = state.aliens.filter(a=> !(a.state==='ejected' && (a.opacity<=0.03 || a.scale<=0.06)));
 
   state.barrels.forEach(b=>{
@@ -1759,7 +1914,7 @@ function drawRockList(list){
 }
 
 function drawAlienList(list){
-  const sorted = list.slice().sort((a,b)=>a.scale-b.scale);
+  const sorted = list.slice().sort((a,b)=> (a.scale-b.scale) || (alienStackLevel(a)-alienStackLevel(b)));
   sorted.forEach(a=>{
     const op = a.opacity!==undefined? a.opacity : 1;
     if(op<=0) return;
@@ -1846,6 +2001,7 @@ function draw(){
   drawFloor();
   drawEmitters();
   drawRedButton();
+  drawLever();
   drawAlienList(state.aliens.filter(isFarTrackAlien));
   drawBarrels();
   if(state.held) drawBeams();
@@ -2055,6 +2211,35 @@ function drawRedButton(){
   ctx.restore();
 }
 
+function drawLever(){
+  const L=layout.lever;
+  ctx.save();
+  ctx.translate(L.x,L.y);
+  // mounting plate
+  ctx.fillStyle='#20262f';
+  roundRectPath(-11,-12,22,24,4); ctx.fill();
+  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+  // handle: tilted up normally, tilted down when flipped
+  const ang = state.leverDown ? Math.PI*0.5-0.5 : -Math.PI*0.5+0.5;
+  const hx=Math.cos(ang)*L.h, hy=Math.sin(ang)*L.h;
+  ctx.strokeStyle='#9aa6b8'; ctx.lineWidth=4; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(hx,hy); ctx.stroke();
+  ctx.fillStyle='#d9e0ea';
+  ctx.beginPath(); ctx.arc(hx,hy,5,0,TAU); ctx.fill();
+  ctx.fillStyle='#3a4351';
+  ctx.beginPath(); ctx.arc(0,0,4,0,TAU); ctx.fill();
+  // warning light: dark while up, blinking red for as long as the lever stays down
+  const lx=24, ly=-6;
+  const lit = state.leverDown && Math.sin(state.t*Math.PI*3) > 0;
+  ctx.fillStyle='#20262f';
+  ctx.beginPath(); ctx.arc(lx,ly,8,0,TAU); ctx.fill();
+  ctx.fillStyle = lit ? '#ff3b3b' : '#4a1616';
+  if(lit){ ctx.shadowColor='#ff3b3b'; ctx.shadowBlur=16; }
+  ctx.beginPath(); ctx.arc(lx,ly,5,0,TAU); ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
 function roundRectPath(x,y,w,h,r){
   ctx.beginPath();
   ctx.moveTo(x+r,y);
@@ -2253,6 +2438,7 @@ document.getElementById('restartBtn').addEventListener('click', ()=>{
   state.rocks=[];
   state.aliens=[];
   state.alienCloneCounters={};
+  state.leverDown=false;
   state.breaching=false;
   state.irisOpen=1; state.irisTarget=1;
   state.phase='playing';
