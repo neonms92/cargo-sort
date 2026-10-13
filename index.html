@@ -783,6 +783,63 @@ const ALIEN_HIDE_MESSAGES=[
   "A little privacy, please!",
   "I was here first!",
 ];
+const ALIEN_CLIMB_CHANCE = 0.25;  // chance to climb the iris ring when reaching it on track 2
+const ALIEN_CLIMB_SPEED = ALIEN_TRACK2_SPEED; // px/s along the ring's arc
+const ALIEN_CLIMB_FALL_MESSAGES=[
+  "Ahh!",
+  "Catch me!",
+  "Whoa whoa whoa!",
+  "Not again!",
+];
+// Radius of the path a climbing alien's center follows: the iris housing ring's outer
+// edge (matches drawIrisWindow) plus the alien's own radius, so it sits on the ring.
+function irisClimbRadius(a){
+  const r = layout.iris.r;
+  return r + r*0.14*0.92 + a.size*a.scale*0.9;
+}
+// Horizontal offset from the iris center where the climb path meets track 2.
+function irisClimbEntryDX(a){
+  const Rc = irisClimbRadius(a);
+  const dy = layout.floorTop - layout.iris.cy;
+  return Math.sqrt(Math.max(0, Rc*Rc - dy*dy));
+}
+function startAlienClimb(a){
+  const Rc = irisClimbRadius(a);
+  const dy = layout.floorTop - layout.iris.cy;
+  const theta0 = Math.atan2(dy, irisClimbEntryDX(a)); // angle of the right-side entry point
+  a.walkPhase = 'climbing';
+  // Normal walkers (moving left) meet the right side and go over the top counterclockwise
+  // (angle decreasing); reverse walkers meet the left side and go clockwise (angle increasing).
+  a.climbDir = a.walksReverse ? 1 : -1;
+  a.climbAngle = a.walksReverse ? Math.PI - theta0 : theta0;
+  a.climbSweep = Math.PI + 2*theta0;
+  a.climbProgress = 0;
+}
+function finishAlienClimb(a){
+  const dx = irisClimbEntryDX(a);
+  a.walkPhase = 'track2';
+  a.baseX = layout.iris.cx + (a.walksReverse ? dx : -dx);
+  a.baseY = layout.floorTop;
+  a.x = a.baseX; a.y = a.baseY;
+}
+// Aliens at track 2's depth (walking it, climbing the iris ring, or falling back onto it)
+// draw behind the barrels.
+function isFarTrackAlien(a){
+  return (a.state==='settled' && (a.walkPhase==='track2' || a.walkPhase==='climbing'))
+      || (a.state==='falling' && a.fallToTrack2);
+}
+function dropClimbingAliens(){
+  state.aliens.forEach(a=>{
+    if(a.state==='settled' && a.walkPhase==='climbing'){
+      a.message = choice(ALIEN_CLIMB_FALL_MESSAGES);
+      a.bubbleT = 2.5;
+      a.state = 'falling';
+      a.walkPhase = null;
+      a.fvy = 0; a.fvx = 0;
+      a.fallToTrack2 = true;
+    }
+  });
+}
 const ALIEN_REDROP_MESSAGES=[
   "Whee! Again!",
   "Why here?",
@@ -815,6 +872,7 @@ function createAlien(skipAvatarLoad){
     walkPhase:null, track:1, waitTimer:0, interactCooldown:0,
     greeted:false, fixitMode:false, buttonRolled:false, walksReverse:false,
     hidingInBarrel:null, hideJumpOut:false,
+    climbRolled:false, climbDir:0, climbAngle:0, climbSweep:0, climbProgress:0, fallToTrack2:false,
   };
   alien.baseName = alien.name;
   if(ALIEN_FACE_MODE==='gravatar' && !skipAvatarLoad) loadAlienAvatar(alien);
@@ -1141,6 +1199,7 @@ function duplicateAlien(parent){
   clone.state = 'settled';
   clone.interactCooldown = 0;
   clone.buttonRolled = false;
+  clone.climbRolled = false;
   if(Math.random()<0.5){
     clone.track = 2;
     clone.walkPhase = 'track2';
@@ -1307,6 +1366,7 @@ function beginLevelTransition(){
   state.phase='transition';
   state.transition={step:'closing', t:0};
   state.irisTarget=0;
+  dropClimbingAliens();
   AudioEngine.sealHum();
   toast('SORTING CYCLE COMPLETE','Engaging transit drive — closing outer iris','good',2000);
 }
@@ -1416,6 +1476,18 @@ function update(){
       a.fvy = (a.fvy||0) + 420*dt;
       a.y += a.fvy*dt;
       a.x += (a.fvx||0)*dt;
+      if(a.fallToTrack2){
+        // Shaken off the iris ring: it's at far-track depth, so no perspective growth,
+        // and it lands back on track 2 rather than the near floor.
+        if(a.y>=layout.floorTop){
+          a.y=layout.floorTop; a.fvy=0; a.fvx=0; a.state='settled';
+          a.baseX=a.x; a.baseY=a.y;
+          a.fallToTrack2 = false;
+          a.walkPhase = 'track2';
+          a.track = 2;
+          a.climbRolled = true; // already dealt with the ring this pass
+        }
+      } else {
       a.x = clamp(a.x, fb.x0, fb.x1);
       const pTop = layout.iris.cy - layout.iris.r*0.2;
       const pBottom = layout.floorBottom;
@@ -1456,6 +1528,7 @@ function update(){
           a.targetScale = ALIEN_TRACK1_SCALE;
           a.interactCooldown = 0;
         }
+      }
       }
     } else if(a.state==='settled'){
       if(a.walkPhase==='track1'){
@@ -1511,6 +1584,19 @@ function update(){
             : W + a.size*a.scale + ALIEN_TRACK_EDGE_MARGIN;
           a.x = a.baseX; a.y = a.baseY;
           a.buttonRolled = false;
+          a.climbRolled = false;
+        }
+      } else if(a.walkPhase==='climbing'){
+        const Rc = irisClimbRadius(a);
+        const dTheta = (ALIEN_CLIMB_SPEED/Rc)*dt;
+        a.climbAngle += a.climbDir*dTheta;
+        a.climbProgress += dTheta;
+        if(a.climbProgress >= a.climbSweep){
+          finishAlienClimb(a);
+        } else {
+          a.x = layout.iris.cx + Math.cos(a.climbAngle)*Rc;
+          a.y = layout.iris.cy + Math.sin(a.climbAngle)*Rc;
+          a.baseX = a.x; a.baseY = a.y;
         }
       } else if(a.walkPhase==='hiding'){
         // waiting silently inside its chosen barrel until a rock is dropped in — see handleBarrelDrop
@@ -1526,6 +1612,20 @@ function update(){
             a.message = choice(ALIEN_BUTTON_MESSAGES);
             a.bubbleT = 3;
             pressRedButton();
+          }
+        }
+
+        // Reaching the near side of the iris ring: one 25% roll per pass to climb over it.
+        if(!a.climbRolled && state.phase==='playing'){
+          const entryDX = irisClimbEntryDX(a);
+          const reached = a.walksReverse
+            ? (a.baseX >= layout.iris.cx - entryDX && a.baseX < layout.iris.cx)
+            : (a.baseX <= layout.iris.cx + entryDX && a.baseX > layout.iris.cx);
+          if(reached){
+            a.climbRolled = true;
+            if(Math.random()<ALIEN_CLIMB_CHANCE){
+              startAlienClimb(a);
+            }
           }
         }
 
@@ -1746,11 +1846,11 @@ function draw(){
   drawFloor();
   drawEmitters();
   drawRedButton();
-  drawAlienList(state.aliens.filter(a=> a.state==='settled' && a.walkPhase==='track2'));
+  drawAlienList(state.aliens.filter(isFarTrackAlien));
   drawBarrels();
   if(state.held) drawBeams();
   drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone'));
-  drawAlienList(state.aliens.filter(a=> a.state!=='floating' && a.state!=='ejected' && a.walkPhase!=='hiding' && !(a.state==='settled' && a.walkPhase==='track2')));
+  drawAlienList(state.aliens.filter(a=> a.state!=='floating' && a.state!=='ejected' && a.walkPhase!=='hiding' && !isFarTrackAlien(a)));
   drawParticles();
   drawAlienBubbles();
 
