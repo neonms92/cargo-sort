@@ -576,8 +576,10 @@ function computeLayout(){
   ];
   layout.frontBounds = {x0:W*0.08,x1:W*0.92,y0:layout.iris.cy-irisR*0.3,y1:layout.floorBottom-6};
   layout.toolbarTop = H-108;
-  layout.redButton = {x: cx - irisR*1.35, y: layout.floorTop, r: 10};
-  layout.lever = {x: cx + irisR*1.35, y: layout.floorTop, h: 24};
+  // Both sit on the far walkway (track 2): their bottoms rest on it, not their centers.
+  // Button housing radius is r*1.6; the lever's mounting plate is 24 tall (±12 around the pivot).
+  layout.redButton = {x: cx - irisR*1.35, y: layout.floorTop - 10*1.6, r: 10};
+  layout.lever = {x: cx + irisR*1.35, y: layout.floorTop - 12, h: 24};
 
   // Floor openings: one under each barrel slot, plus the robot arm's in the middle of the four.
   const R=layout.barrelR;
@@ -2692,7 +2694,9 @@ function drawIrisBlades(cx,cy,r){
   const N=11;
   const open=state.irisOpen;
   ctx.save();
-  ctx.beginPath(); ctx.arc(cx,cy,r*1.62,0,TAU); ctx.clip();
+  // Blades retract into the housing: mask everything outside the outer edge of the ring
+  // (ring is drawn at r + ringW*0.42 with width ringW = r*0.14, see drawIrisWindow).
+  ctx.beginPath(); ctx.arc(cx,cy,r + r*0.14*0.92,0,TAU); ctx.clip();
   const halfW = (Math.PI/N)*1.08;
   for(let i=0;i<N;i++){
     const a0=(i/N)*TAU;
