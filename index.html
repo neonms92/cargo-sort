@@ -955,7 +955,7 @@ function alienIsOffscreen(a){
 function maybeTriggerStack(a){
   if(a.ridingOn) return false;
   const own = new Set(); for(let c=a; c; c=c.rider) own.add(c);
-  const targets = state.aliens.filter(t=> !own.has(t) && !t.rider && alienIsOffscreen(t));
+  const targets = state.aliens.filter(t=> !own.has(t) && !t.rider && !t.abductMarked && alienIsOffscreen(t));
   if(targets.length===0 || Math.random()>=ALIEN_STACK_CHANCE) return false;
   const target = choice(targets);
   a.ridingOn = target;
@@ -1630,18 +1630,27 @@ const smooth01 = u => u*u*(3-2*u);
 const ALIEN_JAM_CHANCE = 0.10;
 const ALIEN_JAM_MESSAGES = ["Little help here?", "It's cramped in there!", "Which way's the exit?", "I was just looking!"];
 const ALIEN_KICK_MESSAGES = ["Rude!", "Was it something I said?", "I'll be baaack!", "Worth it!"];
-// Near-track abduction: two checkpoints on track 1, mirrored about the arm's opening, 5% each.
-const ALIEN_ABDUCT_CHANCE = 0.05;
+// Near-track abduction. The roll happens off-screen (at the gap checkpoint): a marked alien is
+// grabbed by the arm when it next walks past one of two markers on track 1, mirrored about the
+// arm's opening (the first one it reaches while the arm is free; if the arm is still busy at both,
+// it stays marked and tries again next pass). Marked aliens skip stacking, hiding and jamming.
+const ALIEN_ABDUCT_CHANCE = 0.10;
 const ALIEN_ABDUCT_MESSAGES = ["Hey! Put me down!", "Wheee!", "Where are we going?", "Unhand me!", "Not again!"];
 function abductCheckpoints(){
   const d = Math.min(W*0.19, 150)*0.5;   // between the front-row barrels, well within the arm's reach
   return [layout.armHole.x - d, layout.armHole.x + d];
 }
-// Called as a track-1 walker moves from prevX to a.baseX: roll once for each checkpoint crossed.
+function maybeMarkAbduct(a){
+  if(alienInStack(a) || a.abductMarked || Math.random()>=ALIEN_ABDUCT_CHANCE) return false;
+  a.abductMarked = true;
+  return true;
+}
+// Called as a track-1 walker moves from prevX to a.baseX: a marked alien crossing a marker
+// while the arm is free gets grabbed.
 function maybeTriggerAbduct(a, prevX){
-  if(state.phase!=='playing' || state.breaching || alienInStack(a) || !armIdle()) return false;
+  if(!a.abductMarked || state.phase!=='playing' || state.breaching || alienInStack(a) || !armIdle()) return false;
   for(const px of abductCheckpoints()){
-    if(prevX!==a.baseX && (prevX-px)*(a.baseX-px)<=0 && Math.random()<ALIEN_ABDUCT_CHANCE){
+    if(prevX!==a.baseX && (prevX-px)*(a.baseX-px)<=0){
       state.arm.queue.push({type:'abduct', alien:a});
       return true;
     }
@@ -1853,7 +1862,7 @@ function updateAbductJob(arm, job, u, e){
       if(!job.missed){
         arm.wrist=alienGrabWrist(a);
         if(u>=1){
-          a.state='abducted'; a.walkPhase=null; a.fvx=a.fvy=0;
+          a.state='abducted'; a.walkPhase=null; a.fvx=a.fvy=0; a.abductMarked=false;
           a.message=choice(ALIEN_ABDUCT_MESSAGES); a.bubbleT=3;
           job.grabScale=a.scale; job.grabFloorSc=floorScaleAt(arm.wrist.y);
           AudioEngine.uiBlip(180);
@@ -2236,9 +2245,19 @@ function update(){
         // tower's base may still climb onto another off-screen alien (taking its tower along).
         // Duplication is still allowed (the newborn spawns on its own), so it's rolled for every
         // alien in the tower here, since riders never reach this checkpoint themselves.
+        // An unstacked alien also rolls here for a future abduction; once marked it sits out
+        // stacking, hiding and jamming (fixit and duplication still apply).
         const stacked = alienInStack(a);
-        if(a.waitTimer<=0 && (stacked ? !maybeTriggerStack(a) :
-            (!maybeTriggerFixit(a) && !maybeTriggerHide(a) && !maybeTriggerStack(a) && !maybeTriggerJam(a)))){
+        let busy = true;
+        if(a.waitTimer<=0){
+          if(stacked) busy = maybeTriggerStack(a);
+          else {
+            maybeMarkAbduct(a);
+            busy = maybeTriggerFixit(a) ||
+              (!a.abductMarked && (maybeTriggerHide(a) || maybeTriggerStack(a) || maybeTriggerJam(a)));
+          }
+        }
+        if(!busy){
           for(let c=a; c; c=c.rider) maybeTriggerDuplicate(c);
           a.track = 2;
           a.walkPhase = 'track2';
