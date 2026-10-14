@@ -513,19 +513,22 @@ function pieSVG(n,d){
          `<circle r="${r}" fill="none" stroke="#5be6d9" stroke-width="3"/></svg>`;
 }
 // Canvas pie (barrel labels).
-function drawPie(cx,cy,r,n,d,fill,empty,line){
+// Canvas pie, drawn as a circle seen in perspective (rx × ry). Slices use the ellipse's parametric
+// angle, which is exactly how a flat circle's equal slices project, so slice areas stay proportional.
+// The first slice starts at the far side of the lid (12 o'clock) and runs clockwise.
+function drawPie(cx,cy,rx,ry,n,d,fill,empty,line){
   for(let i=0;i<d;i++){
     const a0=-Math.PI/2+i*TAU/d;
-    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,a0,a0+TAU/d); ctx.closePath();
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.ellipse(cx,cy,rx,ry,0,a0,a0+TAU/d); ctx.closePath();
     ctx.fillStyle = i<n ? fill : empty; ctx.fill();
   }
-  ctx.strokeStyle='#0a0d12'; ctx.lineWidth=Math.max(1,r*0.09);
+  ctx.strokeStyle='#0a0d12'; ctx.lineWidth=Math.max(1.2,rx*0.06);
   for(let i=0;i<d;i++){
     const a=-Math.PI/2+i*TAU/d;
-    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*rx, cy+Math.sin(a)*ry); ctx.stroke();
   }
-  ctx.strokeStyle=line; ctx.lineWidth=Math.max(1.2,r*0.1);
-  ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU); ctx.stroke();
+  ctx.strokeStyle=line; ctx.lineWidth=Math.max(1,rx*0.04);
+  ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,TAU); ctx.stroke();
 }
 function sameValue(a,b){
   return Math.abs(a.decimal-b.decimal) < 0.0005;
@@ -2859,7 +2862,7 @@ function drawBarrel(anchor,i,noShadow){
   ctx.beginPath(); ctx.ellipse(x, bottomY-2, R-1, ry, 0, Math.PI*0.15, Math.PI*0.85); ctx.stroke();
 
   const gw=R*0.62;
-  const gTop=topY+R*0.8, gBot=bottomY-R*0.28;
+  const gTop=topY+R*0.95, gBot=bottomY-R*0.28;
   const gx0=anchor.x-gw/2, gh=gBot-gTop;
   ctx.fillStyle='#0a0d12';
   roundRectPath(gx0-3, gTop-3, gw+6, gh+6, 5); ctx.fill();
@@ -2888,6 +2891,16 @@ function drawBarrel(anchor,i,noShadow){
   ctx.fillStyle=lidGrad;
   ctx.beginPath(); ctx.ellipse(anchor.x,topY,R,ry,0,0,TAU); ctx.fill();
 
+  const labelCol = b.value ? (b.sealed? '#c9ffe1':'#d8fbf7') : 'rgba(255,255,255,0.28)';
+  // Pictographic fractions are painted right onto the lid, under the glowing rim.
+  if(b.pie){
+    // a dark recessed plate keeps the filled slices from merging into the glowing rim
+    ctx.fillStyle='#0b0f15';
+    ctx.beginPath(); ctx.ellipse(anchor.x,topY,R*0.84,ry*0.84,0,0,TAU); ctx.fill();
+    drawPie(anchor.x, topY, R*0.72, ry*0.72, b.pie.n, b.pie.d,
+            b.sealed? '#a8ffce':'#5be6d9', '#1c2430', 'rgba(150,170,190,0.5)');
+  }
+
   const flashBoost = b.flashT>0 ? (b.flashT/0.3) : 0;
   ctx.strokeStyle=rimColor;
   ctx.lineWidth=2.5+flashBoost*4;
@@ -2896,16 +2909,24 @@ function drawBarrel(anchor,i,noShadow){
   ctx.beginPath(); ctx.ellipse(anchor.x,topY,R,ry,0,0,TAU); ctx.stroke();
   ctx.shadowBlur=0;
 
-  const labelCol = b.value ? (b.sealed? '#c9ffe1':'#d8fbf7') : 'rgba(255,255,255,0.28)';
-  if(b.pie){
-    const pr=R*0.28;
-    drawPie(anchor.x, gTop-7-pr, pr, b.pie.n, b.pie.d,
-            b.sealed? '#a8ffce':'#5be6d9', 'rgba(10,13,18,0.85)', labelCol);
-  } else {
+  if(!b.pie){
+    // Text label: centered (by its actual ink bounds) in the band between the lid's front edge and
+    // the gauge window, shrunk if needed so long values like 0.125 or 12.5% fit the barrel.
+    const label=b.text || '— —';
+    const bandTop=topY+ry+2, bandBot=gTop-4, maxW=R*1.7, maxH=bandBot-bandTop;
     ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+    let size=Math.round(R*0.42);
+    ctx.font='800 '+size+'px Orbitron, sans-serif';
+    let m=ctx.measureText(label);
+    const capH=(m.actualBoundingBoxAscent||size*0.72);
+    const fit=Math.min(1, maxW/Math.max(1,m.width), maxH/Math.max(1,capH));
+    if(fit<1){ size=Math.max(8, Math.floor(size*fit)); ctx.font='800 '+size+'px Orbitron, sans-serif'; m=ctx.measureText(label); }
+    const asc=m.actualBoundingBoxAscent||size*0.72, desc=m.actualBoundingBoxDescent||0;
+    const left=m.actualBoundingBoxLeft||m.width/2, right=m.actualBoundingBoxRight||m.width/2;
     ctx.fillStyle = labelCol;
-    ctx.font='800 '+Math.round(R*0.46)+'px Orbitron, sans-serif';
-    ctx.fillText(b.text || '— —', anchor.x, gTop-9);
+    const cxText = anchor.x + (left-right)/2;
+    const baseY = (bandTop+bandBot)/2 + (asc-desc)/2;
+    ctx.fillText(label, cxText, baseY);
   }
 
   ctx.restore();
