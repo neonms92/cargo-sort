@@ -2909,17 +2909,19 @@ function drawBarrel(anchor,i,noShadow){
     drawPie(anchor.x, topY, R*0.72, ry*0.72, b.pie.n, b.pie.d,
             b.sealed? '#a8ffce':'#5be6d9', '#1c2430', 'rgba(150,170,190,0.5)');
   } else {
-    // Drawn in the lid's own (un-squashed) circle space, then flattened by ry/R. The font is the
-    // largest whose ink box fits inside the plate's circle, so short values get big and long ones shrink.
+    // Flattened to 60% height — less than the lid's true tilt (ry/R ≈ 42%), which made text too hard
+    // to read. The font is the largest whose ink box fits inside the plate's ellipse (as seen in this
+    // 60%-squashed space), so short values get big and long ones shrink.
     const label=b.text || '— —';
-    const rr=R*0.76;
-    ctx.translate(anchor.x, topY); ctx.scale(1, ry/R);
+    const TEXT_TILT=0.6;
+    const ea=R*0.76, eb=ea*(ry/R)/TEXT_TILT;
+    ctx.translate(anchor.x, topY); ctx.scale(1, TEXT_TILT);
     ctx.textAlign='center'; ctx.textBaseline='alphabetic';
     ctx.font='800 100px Orbitron, sans-serif';
     let m=ctx.measureText(label);
     const w100=(m.actualBoundingBoxLeft+m.actualBoundingBoxRight)||m.width;
     const h100=(m.actualBoundingBoxAscent+m.actualBoundingBoxDescent)||72;
-    const size=Math.max(8, Math.floor(100*2*rr/Math.hypot(w100,h100)));
+    const size=Math.max(8, Math.floor(100/Math.hypot(w100/(2*ea), h100/(2*eb))));
     ctx.font='800 '+size+'px Orbitron, sans-serif';
     m=ctx.measureText(label);
     const asc=m.actualBoundingBoxAscent||size*0.72, desc=m.actualBoundingBoxDescent||0;
