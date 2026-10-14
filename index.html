@@ -2921,6 +2921,23 @@ function withHoleClip(h, open, fn){
     ctx.restore();
   }
 }
+// Like withHoleClip, plus everything on the far side of a segment's exit point `c` (direction `d`):
+// the part of an arm segment that has already come up out of the opening.
+function withEmergedClip(h, open, c, d, fn){
+  withHoleClip(h, open, fn);
+  const L=Math.hypot(d.x,d.y)||1, ux=d.x/L, uy=d.y/L, B=W+H;
+  ctx.save();
+  // below the hole line, outside the opening (already covered above)
+  ctx.beginPath(); ctx.rect(-W, h.y, W*3, H*2); ctx.clip();
+  ctx.beginPath(); ctx.rect(-W, -H, W*3, H*3); ctx.ellipse(h.x,h.y,h.rx,h.ry,0,0,TAU); ctx.clip('evenodd');
+  // and past the exit point along the segment
+  ctx.beginPath();
+  ctx.moveTo(c.x - uy*B, c.y + ux*B); ctx.lineTo(c.x + uy*B, c.y - ux*B);
+  ctx.lineTo(c.x + uy*B + ux*B, c.y - ux*B + uy*B); ctx.lineTo(c.x - uy*B + ux*B, c.y + ux*B + uy*B);
+  ctx.closePath(); ctx.clip();
+  fn();
+  ctx.restore();
+}
 // A circular opening in the floor with two doors that meet at a vertical seam.
 function drawFloorHole(h, open){
   ctx.save();
@@ -2981,15 +2998,26 @@ function drawArm(){
   const throughHole = step==='wait' || step==='rise' || step==='lower' || step==='sink' || step==='open' || step==='close';
   // An abduction reaches out over the floor in front of the opening, below its center line, so the
   // forearm (and, while reaching, the upper arm) must not be masked by the hole then.
+  // An abduction reaches out over the floor in front of the opening, below its center line. Whatever
+  // part of a segment comes after the point where it rose up out of the opening is in the air and
+  // stays visible even when it dips back down in front; the part before that is still underground.
   const abd = arm.job && arm.job.type==='abduct';
-  const freeUpper = abd && (step==='reach' || step==='grip');
-  const freeFore  = abd && (step==='reach' || step==='grip' || step==='carry');
-  const clipIf = (c, fn) => c ? withHoleClip(h, arm.door, fn) : fn();
+  let under = sh.y > h.y;
+  const segClip = (p0, p1) => {
+    if(!abd) return fn => withHoleClip(h, arm.door, fn);
+    if(!under) return fn => fn();
+    const out = p1.y < h.y;               // segment rises out of the opening
+    if(!out) return fn => withHoleClip(h, arm.door, fn);
+    under = false;
+    const t=(p0.y-h.y)/(p0.y-p1.y), c={x:lerp(p0.x,p1.x,t), y:h.y};
+    return fn => withEmergedClip(h, arm.door, c, {x:p1.x-p0.x, y:p1.y-p0.y}, fn);
+  };
   withHoleClip(h, arm.door, ()=>drawArmBar({x:h.x, y:h.y+layout.armSeg*3}, sh, R*0.5, steel)); // mast out of the opening
-  clipIf(!freeUpper, ()=>drawArmBar(sh, elbow, R*0.34, steel));
-  clipIf(!freeFore, ()=>drawArmBar(elbow, wrist, R*0.26, steel));
+  const upperClip = segClip(sh, elbow), foreClip = segClip(elbow, wrist);
+  upperClip(()=>drawArmBar(sh, elbow, R*0.34, steel));
+  foreClip(()=>drawArmBar(elbow, wrist, R*0.26, steel));
   withHoleClip(h, arm.door, ()=>drawArmJoint(sh, R*0.26));
-  clipIf(!freeUpper, ()=>drawArmJoint(elbow, R*0.22));
+  upperClip(()=>drawArmJoint(elbow, R*0.22));
   const payload = ()=>{
     if(arm.carrying>=0) drawBarrel(armBarrelAnchor(wrist), arm.carrying, true);
     const j=arm.job;
