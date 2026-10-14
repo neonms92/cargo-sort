@@ -113,6 +113,7 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
   color:var(--text-dim); letter-spacing:1px; min-width:150px; text-align:center;
   transition:color .15s ease, text-shadow .15s ease;
 }
+#o2Readout .pie{height:1.15em; width:1.15em; display:block; margin:0 auto; filter:drop-shadow(0 0 6px rgba(91,230,217,0.45));}
 #o2Readout.active{color:var(--cyan); text-shadow:0 0 16px rgba(91,230,217,0.55);}
 #toolbarSide{display:flex; flex-direction:column; gap:4px; min-width:170px;}
 #repLabel{font-family:var(--font-display); font-size:9px; letter-spacing:2px; color:var(--text-dim);}
@@ -490,6 +491,42 @@ function valueText(val, rep, opts){
   if(rep==='decimal') return fmtDecimal(val.decimal, repeating);
   return fmtPercent(val.decimal, repeating);
 }
+// Pictographic fractions: only these reduced denominators can be shown as a pie.
+const PIE_DENOMS=[2,3,4,5];
+function pieEligible(val){ return PIE_DENOMS.includes(val.d); }
+function pickRep(val){
+  const reps=['fraction','decimal','percent'];
+  if(pieEligible(val)) reps.push('pie');
+  return choice(reps);
+}
+// SVG markup for the scanner readout.
+function pieSVG(n,d){
+  const r=44; let paths='';
+  for(let i=0;i<d;i++){
+    const a0=-Math.PI/2+i*TAU/d, a1=a0+TAU/d;
+    const x0=(Math.cos(a0)*r).toFixed(2), y0=(Math.sin(a0)*r).toFixed(2);
+    const x1=(Math.cos(a1)*r).toFixed(2), y1=(Math.sin(a1)*r).toFixed(2);
+    const fill = i<n ? '#5be6d9' : 'rgba(91,230,217,0.08)';
+    paths += `<path d="M0 0 L${x0} ${y0} A${r} ${r} 0 0 1 ${x1} ${y1} Z" fill="${fill}" stroke="#0a0d12" stroke-width="3" stroke-linejoin="round"/>`;
+  }
+  return `<svg class="pie" viewBox="-50 -50 100 100" aria-label="${n} of ${d} slices">${paths}`+
+         `<circle r="${r}" fill="none" stroke="#5be6d9" stroke-width="3"/></svg>`;
+}
+// Canvas pie (barrel labels).
+function drawPie(cx,cy,r,n,d,fill,empty,line){
+  for(let i=0;i<d;i++){
+    const a0=-Math.PI/2+i*TAU/d;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,a0,a0+TAU/d); ctx.closePath();
+    ctx.fillStyle = i<n ? fill : empty; ctx.fill();
+  }
+  ctx.strokeStyle='#0a0d12'; ctx.lineWidth=Math.max(1,r*0.09);
+  for(let i=0;i<d;i++){
+    const a=-Math.PI/2+i*TAU/d;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r); ctx.stroke();
+  }
+  ctx.strokeStyle=line; ctx.lineWidth=Math.max(1.2,r*0.1);
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU); ctx.stroke();
+}
 function sameValue(a,b){
   return Math.abs(a.decimal-b.decimal) < 0.0005;
 }
@@ -570,7 +607,8 @@ const state={
   hull:100,
   sector:1,
   // status: 'ready' (on its slot, usable) | 'carried' (in the robot arm) | 'gone' (retrieved) | 'rising' (coming up from its slot)
-  barrels:[0,1,2,3].map(()=>({value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
+  //         | 'destroyed' (blown up by a mismatch; replacement rises after destroyT)
+  barrels:[0,1,2,3].map(()=>({value:null, text:null, pie:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
             status:'ready', door:0, riseT:0})),
   // Robot arm: one job at a time; sealed barrels wait in `queue` (barrel indices, FIFO).
   arm:{queue:[], job:null, door:0, shY:0, wrist:null, carrying:-1, side:1, fk:null},
@@ -666,10 +704,19 @@ function createRock(value, rep){
   const x = sc.cx + Math.cos(ang)*rr;
   const y = sc.cy + Math.sin(ang)*rr;
   const s0 = rand(0.38,0.6);
-  const allowUnreduced = rep==='fraction' && Math.random()<unreducedChance(state.sector);
+  const allowUnreduced = (rep==='fraction'||rep==='pie') && Math.random()<unreducedChance(state.sector);
+  let pie=null, text;
+  if(rep==='pie'){
+    // The only unreduced pie that stays within the whitelist is halves drawn as quarters.
+    const k = allowUnreduced && value.d*2<=PIE_DENOMS[PIE_DENOMS.length-1] ? 2 : 1;
+    pie={n:value.n*k, d:value.d*k};
+    text=pie.n+'/'+pie.d;
+  } else {
+    text=valueText(value,rep,{allowUnreduced});
+  }
   return {
     id:ROCK_ID++,
-    value, rep, text:valueText(value,rep,{allowUnreduced}),
+    value, rep, text, pie,
     x,y, baseX:x, baseY:y,
     vx:rand(-9,9), vy:rand(-6,6),
     size, shape:genShape(size), pal,
@@ -1051,14 +1098,13 @@ function trySpawnRandom(){
   const floatingCount = state.rocks.filter(r=>r.state==='floating').length;
   if(floatingCount>=5) return;
   const value = pickSpawnValue();
-  const rep = choice(['fraction','decimal','percent']);
-  state.rocks.push(createRock(value, rep));
+  state.rocks.push(createRock(value, pickRep(value)));
 }
 
 function startLevel(sector, riseBarrels){
   state.sector=sector;
   document.getElementById('sectorValue').textContent = String(sector).padStart(2,'0');
-  state.barrels.forEach(b=>{b.value=null;b.text=null;b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;
+  state.barrels.forEach(b=>{b.value=null;b.text=null;b.pie=null;b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;
     // Arriving at a new sector: fresh empties come up through the floor. Fresh start/reboot: just there.
     b.status = riseBarrels ? 'rising' : 'ready'; b.riseT = 0; b.door = 0;});
   resetArm();
@@ -1144,6 +1190,19 @@ function spawnExplosion(x,y){
     });
   }
   state.particles.push({type:'flash', x,y, life:0, maxLife:0.35, size:10});
+}
+function spawnBarrelDebris(x,y){
+  const R=layout.barrelR;
+  for(let i=0;i<10;i++){
+    const ang=rand(-Math.PI*0.95,-Math.PI*0.05), sp=rand(140,300);
+    state.particles.push({
+      type:'plate', x:x+rand(-R,R)*0.6, y:y+rand(-R,R),
+      vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp,
+      rot:rand(0,TAU), spin:rand(-9,9),
+      w:rand(0.35,0.7)*R, h:rand(0.12,0.24)*R,
+      life:0, maxLife:rand(0.8,1.2)
+    });
+  }
 }
 function spawnDebrisRain(x,y){
   for(let i=0;i<16;i++){
@@ -1455,6 +1514,7 @@ function handleBarrelDrop(idx, r){
   if(!barrel.value){
     barrel.value = r.value;
     barrel.text = r.text;
+    barrel.pie = r.pie || null;
     barrel.slots = 1;
     r.state='gone';
     removeRock(r);
@@ -1482,10 +1542,14 @@ function mismatch(idx, r){
   const barrel=state.barrels[idx];
   const anchor=layout.barrels4[idx];
   const midY = anchor.y - layout.barrelH*0.5;
-  barrel.value=null; barrel.text=null; barrel.slots=0; barrel.sealed=false;
+  barrel.value=null; barrel.text=null; barrel.pie=null; barrel.slots=0; barrel.sealed=false;
+  barrel.flashT=0; barrel.fillDisplay=0;
+  // The barrel is destroyed outright; a fresh empty one comes up out of its slot shortly after.
+  barrel.status='destroyed'; barrel.destroyT=BARREL_RESPAWN_DELAY; barrel.riseT=0; barrel.door=0;
   r.state='gone';
   removeRock(r);
   spawnExplosion(anchor.x,midY);
+  spawnBarrelDebris(anchor.x, midY);
   damageHull(15);
   AudioEngine.explosion();
   trySpawnRandom();
@@ -1511,7 +1575,7 @@ function ejectBarrel(idx){
   const anchor=layout.barrels4[idx];
   const n=barrel.slots;
   const formerValue=barrel.value;
-  barrel.value=null; barrel.text=null; barrel.slots=0; barrel.sealed=false;
+  barrel.value=null; barrel.text=null; barrel.pie=null; barrel.slots=0; barrel.sealed=false;
   AudioEngine.eject();
   spawnEjectSpark(anchor.x, anchor.y-layout.barrelH*0.5);
   for(let i=0;i<n;i++){
@@ -1525,7 +1589,7 @@ function ejectBarrel(idx){
       } else {
         // Iris closed — the rocks have nowhere to go. Spawn real rocks carrying the barrel's
         // former concentration and fling them into the air; they land and stay fully sortable.
-        const newRock = createRock(formerValue, choice(['fraction','decimal','percent']));
+        const newRock = createRock(formerValue, pickRep(formerValue));
         newRock.x = x; newRock.y = y;
         newRock.baseX = x; newRock.baseY = y;
         newRock.state = 'falling';
@@ -1553,6 +1617,7 @@ const ARM_JOBS = {
              dur:{wait:0.15, open:0.3, rise:0.35, place:0.45, release:0.15, crouch:0.22, swing:0.75, retract:0.28, sink:0.35, close:0.3}},
 };
 const SLOT_DOOR_DUR = 0.3, SLOT_RISE_DUR = 0.6;
+const BARREL_RESPAWN_DELAY = 0.7; // after a mismatch blows a barrel up, before its replacement starts rising
 const smooth01 = u => u*u*(3-2*u);
 
 const ALIEN_JAM_CHANCE = 0.10;
@@ -1814,6 +1879,10 @@ function barrelRiseOffset(b){
 }
 function updateBarrelSlots(dt){
   state.barrels.forEach(b=>{
+    if(b.status==='destroyed'){
+      b.destroyT-=dt;
+      if(b.destroyT<=0){ b.status='rising'; b.riseT=0; }
+    }
     if(b.status==='rising'){
       if(b.riseT===0) AudioEngine.servo(80, 160, SLOT_DOOR_DUR+SLOT_RISE_DUR);
       b.riseT+=dt;
@@ -2182,6 +2251,8 @@ function update(){
     p.life += dt;
     if(p.type==='shard'){
       p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy += 300*dt; p.vx*=0.98;
+    } else if(p.type==='plate'){
+      p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy += 520*dt; p.vx*=0.985; p.rot+=p.spin*dt;
     } else if(p.type==='spark'){
       p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.94; p.vy*=0.94;
     } else if(p.type==='ejectRock'){
@@ -2202,19 +2273,23 @@ function updateToolbar(){
   const repLabel=document.getElementById('repLabel');
   const idlePrompt=document.getElementById('idlePrompt');
   if(state.held && state.held.isAlien){
-    readout.textContent = state.held.name;
+    readout.textContent = state.held.name; readout.dataset.k='';
     readout.classList.add('active');
     repLabel.textContent = 'LIFEFORM DESIGNATION';
     idlePrompt.style.display='none';
     repLabel.style.display='block';
   } else if(state.held){
-    readout.textContent = state.held.text;
+    const r=state.held, key = r.pie ? 'pie:'+r.text : 'txt:'+r.text;
+    if(readout.dataset.k!==key){
+      if(r.pie) readout.innerHTML = pieSVG(r.pie.n, r.pie.d); else readout.textContent = r.text;
+      readout.dataset.k=key;
+    }
     readout.classList.add('active');
-    repLabel.textContent = 'REPRESENTATION: ' + state.held.rep.toUpperCase();
+    repLabel.textContent = 'REPRESENTATION: ' + (r.pie ? 'PICTOGRAPH' : r.rep.toUpperCase());
     idlePrompt.style.display='none';
     repLabel.style.display='block';
   } else {
-    readout.textContent='— — —';
+    readout.textContent='— — —'; readout.dataset.k='';
     readout.classList.remove('active');
     repLabel.style.display='none';
     idlePrompt.style.display='block';
@@ -2615,7 +2690,7 @@ function drawBarrels(){
 }
 function drawBarrelSlot(i){
   const b=state.barrels[i];
-  if(b.status==='gone' || b.status==='carried') return;
+  if(b.status==='gone' || b.status==='carried' || b.status==='destroyed') return;
   const a=layout.barrels4[i];
   if(b.status==='rising'){
     const dy=barrelRiseOffset(b);
@@ -2736,22 +2811,55 @@ function drawBarrel(anchor,i,noShadow){
     ctx.beginPath(); ctx.ellipse(anchor.x,bottomY,R*1.02, ry*0.95,0,0,TAU); ctx.fill();
   }
 
-  const bodyGrad=ctx.createLinearGradient(anchor.x-R,0,anchor.x+R,0);
-  bodyGrad.addColorStop(0,'#20262f');
-  bodyGrad.addColorStop(0.45,'#333c49');
-  bodyGrad.addColorStop(0.55,'#3a4453');
-  bodyGrad.addColorStop(1,'#181d24');
+  // Cylinder body: straight sides, rounded (lower half-ellipse) bottom, shaded like a curved surface.
+  const x=anchor.x;
+  const bodyPath=()=>{
+    ctx.beginPath();
+    ctx.moveTo(x-R, topY);
+    ctx.lineTo(x-R, bottomY);
+    ctx.ellipse(x, bottomY, R, ry, 0, Math.PI, 0, true);
+    ctx.lineTo(x+R, topY);
+    ctx.closePath();
+  };
+  const bodyGrad=ctx.createLinearGradient(x-R,0,x+R,0);
+  bodyGrad.addColorStop(0,'#14181f');
+  bodyGrad.addColorStop(0.18,'#2a323e');
+  bodyGrad.addColorStop(0.36,'#46505f');
+  bodyGrad.addColorStop(0.5,'#38414f');
+  bodyGrad.addColorStop(0.8,'#232a35');
+  bodyGrad.addColorStop(1,'#101318');
   ctx.fillStyle=bodyGrad;
-  ctx.beginPath();
-  ctx.moveTo(anchor.x-R, topY);
-  ctx.lineTo(anchor.x+R, topY);
-  ctx.lineTo(anchor.x+R, bottomY);
-  ctx.lineTo(anchor.x-R, bottomY);
-  ctx.closePath();
-  ctx.fill();
+  bodyPath(); ctx.fill();
+  // Hoops: raised rings that wrap around the barrel, so they curve with the bottom edge.
+  ctx.save();
+  bodyPath(); ctx.clip();
+  [0.2,0.5,0.82].forEach((t,k)=>{
+    const yy=lerp(topY,bottomY,t);
+    const major = k!==1;
+    ctx.strokeStyle='rgba(0,0,0,0.45)'; ctx.lineWidth=major?6:3;
+    ctx.beginPath(); ctx.ellipse(x,yy+1,R,ry,0,0,Math.PI); ctx.stroke();
+    const hg=ctx.createLinearGradient(x-R,0,x+R,0);
+    hg.addColorStop(0,'rgba(180,195,215,0.04)');
+    hg.addColorStop(0.35,'rgba(200,215,235,'+(major?0.38:0.18)+')');
+    hg.addColorStop(1,'rgba(180,195,215,0.03)');
+    ctx.strokeStyle=hg; ctx.lineWidth=major?2:1;
+    ctx.beginPath(); ctx.ellipse(x,yy-1.5,R,ry,0,0,Math.PI); ctx.stroke();
+  });
+  // soft specular streak down the lit side
+  const spec=ctx.createLinearGradient(x-R*0.55,0,x-R*0.15,0);
+  spec.addColorStop(0,'rgba(255,255,255,0)');
+  spec.addColorStop(0.5,'rgba(255,255,255,0.07)');
+  spec.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=spec; ctx.fillRect(x-R*0.55, topY, R*0.4, Hh+ry);
+  ctx.restore();
+  // outline: sides plus the curved bottom rim
+  ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1.5;
+  bodyPath(); ctx.stroke();
+  ctx.strokeStyle='rgba(150,165,185,0.22)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.ellipse(x, bottomY-2, R-1, ry, 0, Math.PI*0.15, Math.PI*0.85); ctx.stroke();
 
   const gw=R*0.62;
-  const gTop=topY+R*0.62, gBot=bottomY-R*0.28;
+  const gTop=topY+R*0.8, gBot=bottomY-R*0.28;
   const gx0=anchor.x-gw/2, gh=gBot-gTop;
   ctx.fillStyle='#0a0d12';
   roundRectPath(gx0-3, gTop-3, gw+6, gh+6, 5); ctx.fill();
@@ -2774,14 +2882,6 @@ function drawBarrel(anchor,i,noShadow){
     ctx.restore();
   }
 
-  [0.2,0.82].forEach(t=>{
-    const yy=lerp(topY,bottomY,t);
-    ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=5;
-    ctx.beginPath(); ctx.moveTo(anchor.x-R,yy); ctx.lineTo(anchor.x+R,yy); ctx.stroke();
-    ctx.strokeStyle='rgba(180,195,215,0.15)'; ctx.lineWidth=1.5;
-    ctx.beginPath(); ctx.moveTo(anchor.x-R,yy-2); ctx.lineTo(anchor.x+R,yy-2); ctx.stroke();
-  });
-
   const lidGrad=ctx.createRadialGradient(anchor.x-R*0.3,topY-ry*0.3,2, anchor.x,topY,R*1.1);
   lidGrad.addColorStop(0,'#4a5568');
   lidGrad.addColorStop(1,'#232a35');
@@ -2796,14 +2896,17 @@ function drawBarrel(anchor,i,noShadow){
   ctx.beginPath(); ctx.ellipse(anchor.x,topY,R,ry,0,0,TAU); ctx.stroke();
   ctx.shadowBlur=0;
 
-  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
-  ctx.fillStyle = b.value ? (b.sealed? '#c9ffe1':'#d8fbf7') : 'rgba(255,255,255,0.28)';
-  ctx.font='800 '+Math.round(R*0.46)+'px Orbitron, sans-serif';
-  ctx.fillText(b.text || '— —', anchor.x, gTop-9);
-
-  ctx.fillStyle='rgba(255,255,255,0.3)';
-  ctx.font='700 '+Math.round(R*0.26)+'px Orbitron, sans-serif';
-  ctx.fillText('B-0'+(i+1), anchor.x, bottomY-R*0.14);
+  const labelCol = b.value ? (b.sealed? '#c9ffe1':'#d8fbf7') : 'rgba(255,255,255,0.28)';
+  if(b.pie){
+    const pr=R*0.28;
+    drawPie(anchor.x, gTop-7-pr, pr, b.pie.n, b.pie.d,
+            b.sealed? '#a8ffce':'#5be6d9', 'rgba(10,13,18,0.85)', labelCol);
+  } else {
+    ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+    ctx.fillStyle = labelCol;
+    ctx.font='800 '+Math.round(R*0.46)+'px Orbitron, sans-serif';
+    ctx.fillText(b.text || '— —', anchor.x, gTop-9);
+  }
 
   ctx.restore();
 }
@@ -2837,7 +2940,15 @@ function drawBeams(){
 function drawParticles(){
   state.particles.forEach(p=>{
     const t=p.life/p.maxLife;
-    if(p.type==='shard'){
+    if(p.type==='plate'){
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, (1-t)*2);
+      ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+      ctx.fillStyle='#2b3341'; ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+      ctx.fillStyle='#4a5568'; ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h*0.35);
+      ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=1; ctx.strokeRect(-p.w/2,-p.h/2,p.w,p.h);
+      ctx.restore();
+    } else if(p.type==='shard'){
       ctx.save();
       ctx.globalAlpha = 1-t;
       ctx.fillStyle = `hsl(${p.hue},90%,60%)`;
