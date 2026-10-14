@@ -1723,6 +1723,12 @@ function startArmJob(item){
   const arm=state.arm;
   arm.job={...item, step:'wait', t:0};
   arm.fk=null;
+  // Start parked straight down below the closed doors, so nothing pokes up before they open.
+  arm.shY=armHiddenShY(); arm.wrist=armColumnWrist(armShoulder());
+  if(item.type==='unjam'){
+    const a=item.alien, p=jamAlienHang(a, arm.wrist);
+    a.x=a.baseX=p.x; a.y=a.baseY=p.y; a.scale=a.targetScale=p.scale;
+  }
   if(item.type==='retrieve'){
     // Elbow up: for a barrel left of the opening that's the +offset solution, right is −offset.
     arm.side = layout.barrels4[item.idx].x < layout.armHole.x ? 1 : -1;
@@ -2774,7 +2780,7 @@ function drawArm(){
   const step=arm.job ? arm.job.step : 'close';
   // Only clip what's actually passing through the opening. A barrel or alien being carried across the
   // floor (e.g. one of the front-row barrels, which stand lower than the opening) must not be masked.
-  const throughHole = step==='rise' || step==='lower' || step==='sink' || step==='open' || step==='close';
+  const throughHole = step==='wait' || step==='rise' || step==='lower' || step==='sink' || step==='open' || step==='close';
   withHoleClip(h, arm.door, ()=>{
     drawArmBar({x:h.x, y:h.y+layout.armSeg*3}, sh, R*0.5, steel); // mast out of the opening
     drawArmBar(sh, elbow, R*0.34, steel);
