@@ -76,8 +76,11 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #hullBarTicks{position:absolute; inset:0; display:flex;}
 #hullBarTicks div{flex:1; border-right:1px solid rgba(0,0,0,0.5);}
 
-#sectorPanel{
+#topRight{
   position:absolute; top:14px; right:14px; z-index:20;
+  display:flex; align-items:center; gap:8px;
+}
+#sectorPanel{
   padding:10px 16px; text-align:right; border-radius:4px;
 }
 #sectorPanel .hud-label{justify-content:flex-end; gap:8px;}
@@ -87,7 +90,6 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 .cdot.on{background:var(--success); border-color:var(--success); box-shadow:0 0 6px var(--success);}
 
 #audioToggle{
-  position:absolute; top:80px; right:14px; z-index:20;
   width:auto; padding:6px 10px; border-radius:4px; cursor:pointer;
   font-family:var(--font-display); font-size:9px; letter-spacing:1.5px; color:var(--text-mid);
   display:flex; align-items:center; gap:6px;
@@ -178,13 +180,6 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 .bigBtn:active{transform:translateY(1px);}
 .bigBtn.danger{background:linear-gradient(180deg, var(--danger), #a52d2d); color:#2a0808; box-shadow:0 0 26px rgba(255,82,82,0.4);}
 
-#instructions{
-  position:absolute; top:14px; left:50%; transform:translateX(-50%);
-  z-index:19; font-size:12px; color:var(--text-dim); letter-spacing:.5px;
-  background:rgba(10,13,20,0.5); padding:5px 14px; border-radius:20px;
-  border:1px solid var(--border); pointer-events:none; opacity:1; transition:opacity 1s ease;
-}
-#instructions.fade{opacity:0;}
 
 @media (prefers-reduced-motion: reduce){
   .toast{transition:none;}
@@ -202,15 +197,14 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
     <div id="hullBarTrack"><div id="hullBarFill"></div><div id="hullBarTicks"></div></div>
   </div>
 
+  <div id="topRight">
+  <div id="audioToggle" class="panel"><span class="dot"></span><span id="audioLabel">COMMS ON</span></div>
   <div id="sectorPanel" class="panel notch">
     <div class="hud-label"><span>SECTOR</span></div>
     <div id="sectorValue">01</div>
     <div id="barrelDots"></div>
   </div>
-
-  <div id="audioToggle" class="panel"><span class="dot"></span><span id="audioLabel">COMMS ON</span></div>
-
-  <div id="instructions">DRAG A ROCK &nbsp;→&nbsp; READ ITS O2 VALUE &nbsp;→&nbsp; DROP IT IN THE MATCHING BARREL &nbsp;•&nbsp; TAP A BARREL TO JETTISON IT</div>
+  </div>
 
   <div id="toolbar" class="panel notch">
     <div id="toolbarInner">
@@ -579,7 +573,7 @@ const state={
   barrels:[0,1,2,3].map(()=>({value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
             status:'ready', door:0, riseT:0})),
   // Robot arm: one job at a time; sealed barrels wait in `queue` (barrel indices, FIFO).
-  arm:{queue:[], job:null, door:0, shY:0, wrist:null, carrying:-1, side:1, elbowLock:null, forearmAng:0},
+  arm:{queue:[], job:null, door:0, shY:0, wrist:null, carrying:-1, side:1, fk:null},
   rocks:[],
   aliens:[],
   alienSpawnedThisSector:false,
@@ -906,9 +900,12 @@ function alienIsOffscreen(a){
   const root = alienStackRoot(a);
   return root.state==='settled' && root.walkPhase==='gap';
 }
+// Riders never roll; a standalone alien or the base of a tower can. A base carries its whole
+// tower up onto the target, so towers can merge.
 function maybeTriggerStack(a){
-  if(alienInStack(a)) return false;
-  const targets = state.aliens.filter(t=> t!==a && !t.rider && alienIsOffscreen(t));
+  if(a.ridingOn) return false;
+  const own = new Set(); for(let c=a; c; c=c.rider) own.add(c);
+  const targets = state.aliens.filter(t=> !own.has(t) && !t.rider && alienIsOffscreen(t));
   if(targets.length===0 || Math.random()>=ALIEN_STACK_CHANCE) return false;
   const target = choice(targets);
   a.ridingOn = target;
@@ -1546,13 +1543,14 @@ function ejectBarrel(idx){
 //  retrieve: doors open → arm rises → reaches the barrel → grabs the lid (magnet) → carries it
 //            over the arm's opening → pulls it down out of sight → doors close.        ≈3.25s
 //  unjam:    doors open → arm rises holding a stuck alien → sets it down beside the opening →
-//            lifts off → swings the forearm 360° around the elbow and kicks the alien off-screen →
-//            retracts → doors close.                                                  ≈3.3s
+//            lifts off → crouches low behind it → swings the forearm 360° around the elbow, booting
+//            the alien in the rump on the way through and following through to straight up →
+//            retracts → doors close.                                                  ≈3.4s
 const ARM_JOBS = {
   retrieve: {steps:['wait','open','rise','reach','grip','carry','lower','close'],
              dur:{wait:0.35, open:0.3, rise:0.3, reach:0.5, grip:0.2, carry:0.7, lower:0.6, close:0.3}},
-  unjam:    {steps:['wait','open','rise','place','release','swing','retract','sink','close'],
-             dur:{wait:0.2, open:0.3, rise:0.4, place:0.5, release:0.15, swing:0.8, retract:0.35, sink:0.35, close:0.3}},
+  unjam:    {steps:['wait','open','rise','place','release','crouch','swing','retract','sink','close'],
+             dur:{wait:0.15, open:0.3, rise:0.35, place:0.45, release:0.15, crouch:0.22, swing:0.75, retract:0.28, sink:0.35, close:0.3}},
 };
 const SLOT_DOOR_DUR = 0.3, SLOT_RISE_DUR = 0.6;
 const smooth01 = u => u*u*(3-2*u);
@@ -1564,7 +1562,7 @@ const ALIEN_KICK_MESSAGES = ["Rude!", "Was it something I said?", "I'll be baaac
 function resetArm(){
   const arm=state.arm;
   arm.queue=[]; arm.job=null; arm.door=0; arm.carrying=-1; arm.wrist=null; arm.side=1;
-  arm.elbowLock=null; arm.forearmAng=0;
+  arm.fk=null;
   arm.shY=armHiddenShY();
 }
 function queueArmRetrieval(idx){
@@ -1600,13 +1598,11 @@ function armSolve(sh, target, side){
   const wrist={x:sh.x+Math.cos(base)*d, y:sh.y+Math.sin(base)*d};
   return {elbow, wrist};
 }
-// Current arm pose; during the swing the elbow is frozen and the forearm spins around it.
+// Current arm pose. Normally IK toward arm.wrist; arm.fk overrides with an explicit
+// elbow/wrist (used while crouching, swinging around a fixed elbow, and recovering).
 function armPose(){
   const arm=state.arm, sh=armShoulder();
-  if(arm.elbowLock){
-    const L=layout.armSeg, e=arm.elbowLock;
-    return {sh, elbow:e, wrist:{x:e.x+Math.cos(arm.forearmAng)*L, y:e.y+Math.sin(arm.forearmAng)*L}};
-  }
+  if(arm.fk) return {sh, elbow:arm.fk.elbow, wrist:arm.fk.wrist};
   const s=armSolve(sh, arm.wrist||armColumnWrist(sh), arm.side);
   return {sh, elbow:s.elbow, wrist:s.wrist};
 }
@@ -1658,7 +1654,7 @@ function kickJammedAlien(a, side){
 function startArmJob(item){
   const arm=state.arm;
   arm.job={...item, step:'wait', t:0};
-  arm.elbowLock=null;
+  arm.fk=null;
   if(item.type==='retrieve'){
     // Elbow up: for a barrel left of the opening that's the +offset solution, right is −offset.
     arm.side = layout.barrels4[item.idx].x < layout.armHole.x ? 1 : -1;
@@ -1688,7 +1684,7 @@ function updateArm(dt){
   if(job.type==='retrieve') updateRetrieveJob(arm, job, u, e);
   else updateUnjamJob(arm, job, u, e);
   if(u>=1) advanceArmStep(job);
-  if(job.step==='done'){ arm.job=null; arm.door=0; arm.shY=armHiddenShY(); arm.wrist=null; arm.elbowLock=null; }
+  if(job.step==='done'){ arm.job=null; arm.door=0; arm.shY=armHiddenShY(); arm.wrist=null; arm.fk=null; }
 }
 function updateRetrieveJob(arm, job, u, e){
   const R=layout.barrelR;
@@ -1754,26 +1750,52 @@ function updateUnjamJob(arm, job, u, e){
       a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
       if(u>=1){
         const p=armPose();
-        arm.elbowLock=p.elbow;
-        job.ang0=Math.atan2(p.wrist.y-p.elbow.y, p.wrist.x-p.elbow.x);
-        // spin so the wrist is travelling outward (toward `side`) as it comes back around to the alien
-        const s=-Math.sin(job.ang0)*side;
-        job.spin = s>=0 ? 1 : -1;
-        arm.forearmAng=job.ang0;
+        job.fromPose={shY:arm.shY, elbow:p.elbow, wrist:p.wrist};
+        // Crouch target: elbow directly over the opening, up-and-behind the alien's rump, so the
+        // forearm (pointing down-and-outward) lands on the rump while sweeping outward and up, and
+        // the low part of the swing dips into the open hole rather than through the floor.
+        const sc=a.scale, rump={x:a.x - side*a.size*sc*0.45, y:a.y + a.size*sc*0.5};
+        const hx=layout.armHole.x;
+        job.kickAng = Math.acos(clamp((rump.x - hx)/L, -0.9, 0.9));   // 0..π, below horizontal
+        const E={x:rump.x - Math.cos(job.kickAng)*L, y:rump.y - Math.sin(job.kickAng)*L};
+        const dx=Math.min(Math.abs(E.x-layout.armHole.x), L*0.95);
+        job.elbow=E;
+        job.crouchShY = E.y + Math.sqrt(L*L - dx*dx);   // mast drops so the shoulder→elbow segment fits
+        job.spin = side>0 ? -1 : 1;                      // outward-and-up through the kick point
+        // fraction of the full turn (starting straight up) at which the wrist reaches the rump
+        job.kickFrac = (side>0 ? (1.5*Math.PI - job.kickAng) : (job.kickAng + 0.5*Math.PI)) / TAU;
       }
       break;
     }
-    case 'swing':
-      arm.forearmAng = job.ang0 + job.spin*TAU*e;
-      if(!job.kicked && u>=0.92){ job.kicked=true; kickJammedAlien(a, side); }
-      if(u>=1){ // hand the pose back to IK from where the forearm finished
-        arm.wrist=armPose().wrist; arm.elbowLock=null; job.retractFrom=arm.wrist;
+    case 'crouch': {
+      // lower the whole arm into the wind-up pose: elbow behind the alien, forearm straight up
+      const f=job.fromPose, E=job.elbow, W={x:E.x, y:E.y-L};
+      arm.shY=lerp(f.shY, job.crouchShY, e);
+      arm.fk={elbow:{x:lerp(f.elbow.x,E.x,e), y:lerp(f.elbow.y,E.y,e)},
+              wrist:{x:lerp(f.wrist.x,W.x,e), y:lerp(f.wrist.y,W.y,e)}};
+      break;
+    }
+    case 'swing': {
+      // one full turn from straight up, through the rump, back to straight up
+      const E=job.elbow, ang=-Math.PI/2 + job.spin*TAU*e;
+      arm.fk={elbow:E, wrist:{x:E.x+Math.cos(ang)*L, y:E.y+Math.sin(ang)*L}};
+      if(!job.kicked && e>=job.kickFrac){ job.kicked=true; kickJammedAlien(a, side); }
+      if(u>=1){
+        job.fromPose={shY:arm.shY, elbow:E, wrist:{x:E.x, y:E.y-L}};
+        const sh0=arm.shY; arm.shY=armColumnShY(); arm.fk=null;
+        const endPose=armSolve(armShoulder(), armCarryWrist(), arm.side);
+        job.toPose={shY:arm.shY, elbow:endPose.elbow, wrist:endPose.wrist};
+        arm.shY=sh0; arm.fk=job.fromPose;
       }
       break;
+    }
     case 'retract': {
-      arm.shY=lerp(armUpShY(), armColumnShY(), e);
-      const from=job.retractFrom||armCarryWrist(), to=armCarryWrist();
-      arm.wrist={x:lerp(from.x,to.x,e), y:lerp(from.y,to.y,e)};
+      // blend from the follow-through pose back to the column pose, then IK takes over for the sink
+      const f=job.fromPose, t=job.toPose;
+      arm.shY=lerp(f.shY, t.shY, e);
+      arm.fk={elbow:{x:lerp(f.elbow.x,t.elbow.x,e), y:lerp(f.elbow.y,t.elbow.y,e)},
+              wrist:{x:lerp(f.wrist.x,t.wrist.x,e), y:lerp(f.wrist.y,t.wrist.y,e)}};
+      if(u>=1){ arm.fk=null; arm.wrist=armCarryWrist(); }
       break;
     }
     case 'sink': {
@@ -2041,11 +2063,12 @@ function update(){
         }
       } else if(a.walkPhase==='gap'){
         a.waitTimer -= dt;
-        // Anyone in a tower is locked into stacking behavior: no fixit or hide. Duplication
-        // is still allowed (the newborn spawns on its own), so it's rolled for every alien
-        // in the tower here, since riders never reach this checkpoint themselves.
+        // Anyone in a tower is locked into stacking behavior: no fixit, hide or jam, but the
+        // tower's base may still climb onto another off-screen alien (taking its tower along).
+        // Duplication is still allowed (the newborn spawns on its own), so it's rolled for every
+        // alien in the tower here, since riders never reach this checkpoint themselves.
         const stacked = alienInStack(a);
-        if(a.waitTimer<=0 && (stacked ||
+        if(a.waitTimer<=0 && (stacked ? !maybeTriggerStack(a) :
             (!maybeTriggerFixit(a) && !maybeTriggerHide(a) && !maybeTriggerStack(a) && !maybeTriggerJam(a)))){
           for(let c=a; c; c=c.rider) maybeTriggerDuplicate(c);
           a.track = 2;
@@ -2693,7 +2716,8 @@ function drawArm(){
     ctx.fillStyle='#c98a2d';
     roundRectPath(wrist.x-R*0.22, wrist.y+R*0.1, R*0.44, R*0.12, 2); ctx.fill();
   };
-  if(throughHole) withHoleClip(h, arm.door, wristJoint); else wristJoint();
+  // The kick's swing dips the wrist down into the open hole, so clip it then too.
+  if(throughHole || step==='swing' || step==='crouch') withHoleClip(h, arm.door, wristJoint); else wristJoint();
 }
 function drawBarrel(anchor,i,noShadow){
   const b=state.barrels[i];
@@ -2871,7 +2895,6 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   document.getElementById('hullBarFill').style.background='linear-gradient(90deg,#3fce8a,var(--success))';
   document.getElementById('hullPct').textContent='100%';
   startLevel(1);
-  setTimeout(()=>document.getElementById('instructions').classList.add('fade'), 9000);
 });
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
