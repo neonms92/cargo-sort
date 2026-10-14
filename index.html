@@ -407,7 +407,25 @@ const AudioEngine = (function(){
     osc.start(now); osc.stop(now+0.13);
   }
 
-  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip,
+  // Short mechanical whir for the robot arm / floor doors. f0→f1 sweep over dur seconds.
+  function servo(f0, f1, dur){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime;
+    const osc=ctx.createOscillator();
+    osc.type='sawtooth';
+    osc.frequency.setValueAtTime(f0, now);
+    osc.frequency.linearRampToValueAtTime(f1, now+dur);
+    const filt=ctx.createBiquadFilter(); filt.type='lowpass'; filt.frequency.value=700;
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.035, now+0.04);
+    g.gain.setValueAtTime(0.035, now+Math.max(0.05,dur-0.06));
+    g.gain.exponentialRampToValueAtTime(0.0001, now+dur);
+    osc.connect(filt); filt.connect(g); g.connect(master);
+    osc.start(now); osc.stop(now+dur+0.02);
+  }
+
+  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo,
           get running(){return !!ctx;}};
 })();
 
@@ -526,6 +544,30 @@ function computeLayout(){
   layout.toolbarTop = H-108;
   layout.redButton = {x: cx - irisR*1.35, y: layout.floorTop, r: 10};
   layout.lever = {x: cx + irisR*1.35, y: layout.floorTop, h: 24};
+
+  // Floor openings: one under each barrel slot, plus the robot arm's in the middle of the four.
+  const R=layout.barrelR;
+  const holeRx=R*1.08, holeRy=R*0.42*1.1;
+  layout.barrelHoles = layout.barrels4.map(a=>({x:a.x, y:a.y, rx:holeRx, ry:holeRy}));
+  layout.armHole = {x:cx, y:(gy1+gy2)/2, rx:holeRx, ry:holeRy};
+  // Arm geometry: a mast rises out of the hole to the shoulder; two equal segments reach from there.
+  layout.armMast = layout.barrelH*0.55;
+  layout.armPincer = R*0.5;
+  const sh = {x:cx, y:layout.armHole.y - layout.armMast};
+  let maxReach = 0;
+  for(const a of layout.barrels4){
+    const w = armGrabWrist(a);
+    maxReach = Math.max(maxReach, Math.hypot(w.x-sh.x, w.y-sh.y));
+  }
+  layout.armSeg = maxReach*0.58;
+}
+// Where the wrist sits when the pincers are clamped on the lid of a barrel standing at `anchor`.
+function armGrabWrist(anchor){
+  return {x:anchor.x, y:anchor.y - layout.barrelH - layout.armPincer*0.7};
+}
+// Inverse of the above: barrel anchor (bottom-center) for a given wrist position.
+function armBarrelAnchor(w){
+  return {x:w.x, y:w.y + layout.armPincer*0.7 + layout.barrelH};
 }
 
 const state={
@@ -533,8 +575,11 @@ const state={
   breaching:false,
   hull:100,
   sector:1,
-  barrels:[ {value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0}, {value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0},
-            {value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0}, {value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0} ],
+  // status: 'ready' (on its slot, usable) | 'carried' (in the robot arm) | 'gone' (retrieved) | 'rising' (coming up from its slot)
+  barrels:[0,1,2,3].map(()=>({value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
+            status:'ready', door:0, riseT:0})),
+  // Robot arm: one job at a time; sealed barrels wait in `queue` (barrel indices, FIFO).
+  arm:{queue:[], job:null, door:0, shY:0, wrist:null, grip:0, carrying:-1, side:1},
   rocks:[],
   aliens:[],
   alienSpawnedThisSector:false,
@@ -1013,10 +1058,13 @@ function trySpawnRandom(){
   state.rocks.push(createRock(value, rep));
 }
 
-function startLevel(sector){
+function startLevel(sector, riseBarrels){
   state.sector=sector;
   document.getElementById('sectorValue').textContent = String(sector).padStart(2,'0');
-  state.barrels.forEach(b=>{b.value=null;b.text=null;b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;});
+  state.barrels.forEach(b=>{b.value=null;b.text=null;b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;
+    // Arriving at a new sector: fresh empties come up through the floor. Fresh start/reboot: just there.
+    b.status = riseBarrels ? 'rising' : 'ready'; b.riseT = 0; b.door = 0;});
+  resetArm();
   updateBarrelDots();
   state.rocks=[];
   state.alienSpawnedThisSector=false;
@@ -1149,6 +1197,7 @@ function hitAlien(pos){
   return null;
 }
 function hitBarrel(pos, idx){
+  if(state.barrels[idx].status!=='ready') return false; // carried off, gone, or still coming up
   const anchor=layout.barrels4[idx];
   const R=layout.barrelR, Hh=layout.barrelH;
   const topY=anchor.y-Hh, botY=anchor.y+R*0.4;
@@ -1356,7 +1405,7 @@ function duplicateAlien(parent){
 
 function maybeTriggerHide(a){
   const eligible = [];
-  state.barrels.forEach((b,i)=>{ if(!b.sealed) eligible.push(i); });
+  state.barrels.forEach((b,i)=>{ if(!b.sealed && b.status==='ready') eligible.push(i); });
   if(eligible.length===0) return false;
   if(Math.random()<0.05){
     a.hidingInBarrel = choice(eligible);
@@ -1452,9 +1501,8 @@ function sealBarrel(idx){
   const anchor=layout.barrels4[idx];
   spawnSealRing(anchor.x, anchor.y-layout.barrelH*0.5);
   updateBarrelDots();
-  if(state.barrels.every(b=>b.sealed)){
-    beginLevelTransition();
-  }
+  queueArmRetrieval(idx);
+  // The sector change waits until the arm has taken every barrel away (see updateArm).
 }
 
 function ejectBarrel(idx){
@@ -1462,7 +1510,7 @@ function ejectBarrel(idx){
   const hidden = state.aliens.find(a=>a.hidingInBarrel===idx);
   if(hidden) evictAlienFromBarrel(hidden, idx);
   const barrel=state.barrels[idx];
-  if(barrel.slots===0 || barrel.sealed) return;
+  if(barrel.slots===0 || barrel.sealed || barrel.status!=='ready') return;
   const anchor=layout.barrels4[idx];
   const n=barrel.slots;
   const formerValue=barrel.value;
@@ -1491,6 +1539,125 @@ function ejectBarrel(idx){
     }, i*90);
   }
   updateBarrelDots();
+}
+
+// ---------- Robot arm & floor doors ----------
+// One job at a time. A retrieval: doors open → arm rises → reaches the barrel → grips the lid →
+// carries it over the arm's opening → pulls it down out of sight → doors close. ≈3s total.
+const ARM_STEPS = ['wait','open','rise','reach','grip','carry','lower','close'];
+const ARM_STEP_DUR = {wait:0.35, open:0.3, rise:0.3, reach:0.5, grip:0.2, carry:0.7, lower:0.6, close:0.3};
+const SLOT_DOOR_DUR = 0.3, SLOT_RISE_DUR = 0.6;
+const smooth01 = u => u*u*(3-2*u);
+
+function resetArm(){
+  const arm=state.arm;
+  arm.queue=[]; arm.job=null; arm.door=0; arm.grip=0; arm.carrying=-1; arm.wrist=null; arm.side=1;
+  arm.shY=armHiddenShY();
+}
+function queueArmRetrieval(idx){
+  if(!state.arm.queue.includes(idx) && !(state.arm.job && state.arm.job.idx===idx)) state.arm.queue.push(idx);
+}
+function armIdle(){ return !state.arm.job && state.arm.queue.length===0; }
+// The shoulder rides on a telescoping mast. Whenever the arm passes through the opening it is
+// straightened into a near-vertical column so the elbow never sweeps through the floor.
+const ARM_STRAIGHT = 1.9; // shoulder→wrist distance (in segment lengths) for the column pose
+function armShoulder(){ return {x:layout.armHole.x, y:state.arm.shY}; }
+function armColumnWrist(sh){ return {x:sh.x, y:sh.y - layout.armSeg*ARM_STRAIGHT}; }
+function armUpShY(){ return layout.armHole.y - layout.armMast; }           // mast fully extended
+function armColumnShY(){ return armCarryWrist().y + layout.armSeg*ARM_STRAIGHT; } // column, wrist at carry height
+function armSinkDepth(){ return layout.barrelH + layout.barrelR*1.5; }      // far enough to hide barrel + arm
+function armHiddenShY(){ return armColumnShY() + armSinkDepth(); }
+// Wrist position with the barrel hanging just above the arm's opening.
+function armCarryWrist(){
+  const h=layout.armHole;
+  return armGrabWrist({x:h.x, y:h.y - layout.barrelR*0.4});
+}
+// Two-bone IK. `side` keeps the elbow on one consistent side of the shoulder→wrist line
+// for a whole job so it never flips mid-motion. Returns the reachable wrist too.
+function armSolve(sh, target, side){
+  const L=layout.armSeg;
+  const dx=target.x-sh.x, dy=target.y-sh.y;
+  const raw=Math.hypot(dx,dy);
+  const d=clamp(raw, 1e-3, 2*L*0.999);
+  const base=Math.atan2(dy,dx), off=Math.acos(d/(2*L));
+  const ang=base + side*off;
+  const elbow={x:sh.x+Math.cos(ang)*L, y:sh.y+Math.sin(ang)*L};
+  const wrist={x:sh.x+Math.cos(base)*d, y:sh.y+Math.sin(base)*d};
+  return {elbow, wrist};
+}
+function startArmJob(idx){
+  const arm=state.arm;
+  arm.job={idx, step:'wait', t:0};
+  // Elbow up: for a barrel left of the opening that's the +offset solution, right is −offset.
+  arm.side = layout.barrels4[idx].x < layout.armHole.x ? 1 : -1;
+}
+function advanceArmStep(job){
+  const i=ARM_STEPS.indexOf(job.step);
+  job.t=0;
+  job.step = ARM_STEPS[i+1] || 'done';
+  const s=job.step;
+  if(s==='open' || s==='close') AudioEngine.servo(140, s==='open'?220:110, ARM_STEP_DUR[s]);
+  else if(s==='rise' || s==='reach' || s==='carry') AudioEngine.servo(90, 170, ARM_STEP_DUR[s]);
+  else if(s==='lower') AudioEngine.servo(170, 70, ARM_STEP_DUR[s]);
+}
+function updateArm(dt){
+  const arm=state.arm;
+  if(!arm.job && arm.queue.length) startArmJob(arm.queue.shift());
+  const job=arm.job;
+  if(!job){ arm.wrist=null; return; }
+  job.t+=dt;
+  const dur=ARM_STEP_DUR[job.step];
+  const u=clamp(job.t/dur,0,1), e=smooth01(u);
+  const R=layout.barrelR;
+  const anchor=layout.barrels4[job.idx];
+  switch(job.step){
+    case 'wait': break;
+    case 'open': arm.door=e; break;
+    case 'rise': arm.shY=lerp(armHiddenShY(), armColumnShY(), e); arm.wrist=armColumnWrist(armShoulder()); break;
+    case 'reach': {
+      arm.shY=lerp(armColumnShY(), armUpShY(), e);
+      const from=armCarryWrist(), to=armGrabWrist(anchor);
+      arm.wrist={x:lerp(from.x,to.x,e), y:lerp(from.y,to.y,e) - Math.sin(Math.PI*u)*R*0.6};
+      break;
+    }
+    case 'grip':
+      arm.wrist=armGrabWrist(anchor); arm.grip=e;
+      if(u>=1){ state.barrels[job.idx].status='carried'; arm.carrying=job.idx; AudioEngine.uiBlip(180); }
+      break;
+    case 'carry': {
+      arm.shY=lerp(armUpShY(), armColumnShY(), e);
+      const from=armGrabWrist(anchor), to=armCarryWrist();
+      arm.wrist={x:lerp(from.x,to.x,e), y:lerp(from.y,to.y,e) - Math.sin(Math.PI*u)*R*1.4};
+      break;
+    }
+    case 'lower': {
+      const d=armSinkDepth()*e, from=armCarryWrist();
+      arm.shY=armColumnShY()+d;
+      arm.wrist={x:from.x, y:from.y+d};
+      if(u>=1){ state.barrels[job.idx].status='gone'; arm.carrying=-1; arm.grip=0; }
+      break;
+    }
+    case 'close': arm.door=1-e; break;
+  }
+  if(u>=1) advanceArmStep(job);
+  if(job.step==='done'){ arm.job=null; arm.door=0; arm.shY=armHiddenShY(); arm.wrist=null; }
+}
+function barrelRiseOffset(b){
+  if(b.status!=='rising') return 0;
+  const u=clamp((b.riseT-SLOT_DOOR_DUR)/SLOT_RISE_DUR,0,1);
+  return (1-smooth01(u))*(layout.barrelH + layout.barrelR);
+}
+function updateBarrelSlots(dt){
+  state.barrels.forEach(b=>{
+    if(b.status==='rising'){
+      if(b.riseT===0) AudioEngine.servo(80, 160, SLOT_DOOR_DUR+SLOT_RISE_DUR);
+      b.riseT+=dt;
+      b.door=clamp(b.riseT/SLOT_DOOR_DUR,0,1);
+      if(b.riseT>=SLOT_DOOR_DUR+SLOT_RISE_DUR) b.status='ready'; // usable now; doors close underneath it
+    } else if(b.door>0){
+      b.door=Math.max(0, b.door-dt/SLOT_DOOR_DUR);
+    }
+  });
 }
 
 function removeRock(r){
@@ -1523,7 +1690,7 @@ function updateTransition(dt){
       tr.step='opening'; tr.t=0;
       state.irisTarget=1;
       toast('ARRIVING AT SECTOR '+String(state.sector+1).padStart(2,'0'),'New mineral field detected','info',1800);
-      startLevel(state.sector+1);
+      startLevel(state.sector+1, true);
     }
   } else if(tr.step==='opening'){
     if(state.irisOpen>0.97 && tr.t>0.4){
@@ -1547,6 +1714,14 @@ function update(){
     if(state.spawnTimer<=0){ trySpawnRandom(); state.spawnTimer = rand(0.7,1.3); }
   }
   if(state.phase==='transition' && state.transition){ updateTransition(dt); }
+
+  updateArm(dt);
+  updateBarrelSlots(dt);
+  // Sector change only once the arm has hauled away all four barrels.
+  if(state.phase==='playing' && !state.breaching && armIdle() &&
+     state.barrels.every(b=>b.status==='gone')){
+    beginLevelTransition();
+  }
 
   const sc=layout.spawnCircle;
   const fb=layout.frontBounds;
@@ -2253,9 +2428,117 @@ function roundRectPath(x,y,w,h,r){
 }
 
 function drawBarrels(){
-  layout.barrels4.forEach((anchor,i)=>drawBarrel(anchor,i));
+  // Floor openings first, then back row, the arm (and anything it carries), then the front row.
+  layout.barrelHoles.forEach((h,i)=>drawFloorHole(h, state.barrels[i].door));
+  drawFloorHole(layout.armHole, state.arm.door);
+  drawBarrelSlot(0); drawBarrelSlot(1);
+  drawArm();
+  drawBarrelSlot(2); drawBarrelSlot(3);
 }
-function drawBarrel(anchor,i){
+function drawBarrelSlot(i){
+  const b=state.barrels[i];
+  if(b.status==='gone' || b.status==='carried') return;
+  const a=layout.barrels4[i];
+  if(b.status==='rising'){
+    const dy=barrelRiseOffset(b);
+    withHoleClip(layout.barrelHoles[i], b.door, ()=>drawBarrel({x:a.x, y:a.y+dy}, i, true));
+  } else {
+    drawBarrel(a,i);
+  }
+}
+// Draw something that passes down through a floor opening: visible above the hole's center line,
+// and below it only through the gap between the open doors.
+function withHoleClip(h, open, fn){
+  ctx.save();
+  ctx.beginPath(); ctx.rect(-W, -H, W*3, h.y+H); ctx.clip();
+  fn();
+  ctx.restore();
+  if(open>0){
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(h.x,h.y,h.rx,h.ry,0,0,TAU); ctx.clip();
+    ctx.beginPath(); ctx.rect(h.x-open*h.rx, h.y, open*h.rx*2, h.ry+2); ctx.clip();
+    fn();
+    ctx.restore();
+  }
+}
+// A circular opening in the floor with two doors that meet at a vertical seam.
+function drawFloorHole(h, open){
+  ctx.save();
+  ctx.fillStyle='#07090d';
+  ctx.beginPath(); ctx.ellipse(h.x,h.y,h.rx*1.14,h.ry*1.2,0,0,TAU); ctx.fill();
+  ctx.strokeStyle='#3a4351'; ctx.lineWidth=2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(h.x,h.y,h.rx,h.ry,0,0,TAU); ctx.clip();
+  const pit=ctx.createLinearGradient(0,h.y-h.ry,0,h.y+h.ry);
+  pit.addColorStop(0,'#000'); pit.addColorStop(1,'#0d1a1f');
+  ctx.fillStyle=pit; ctx.fillRect(h.x-h.rx, h.y-h.ry, h.rx*2, h.ry*2);
+  const gap=open*h.rx;
+  const dg=ctx.createLinearGradient(0,h.y-h.ry,0,h.y+h.ry);
+  dg.addColorStop(0,'#1a2028'); dg.addColorStop(1,'#2b3341');
+  ctx.fillStyle=dg;
+  ctx.fillRect(h.x-h.rx-1, h.y-h.ry-1, h.rx-gap+1, h.ry*2+2);
+  ctx.fillRect(h.x+gap, h.y-h.ry-1, h.rx-gap+1, h.ry*2+2);
+  // door edges: dark seam with a thin amber hazard line on each leading edge
+  ctx.lineWidth=1.5;
+  for(const ex of [h.x-gap, h.x+gap]){
+    ctx.strokeStyle='rgba(0,0,0,0.75)';
+    ctx.beginPath(); ctx.moveTo(ex,h.y-h.ry); ctx.lineTo(ex,h.y+h.ry); ctx.stroke();
+  }
+  ctx.strokeStyle='rgba(255,182,72,0.35)';
+  ctx.beginPath(); ctx.moveTo(h.x-gap-3,h.y-h.ry); ctx.lineTo(h.x-gap-3,h.y+h.ry); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(h.x+gap+3,h.y-h.ry); ctx.lineTo(h.x+gap+3,h.y+h.ry); ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle='rgba(120,140,165,0.35)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.ellipse(h.x,h.y,h.rx,h.ry,0,0,TAU); ctx.stroke();
+}
+function drawArmBar(p,q,w,fill){
+  const ang=Math.atan2(q.y-p.y,q.x-p.x), len=Math.hypot(q.x-p.x,q.y-p.y);
+  ctx.save();
+  ctx.translate(p.x,p.y); ctx.rotate(ang);
+  const g=ctx.createLinearGradient(0,-w/2,0,w/2);
+  g.addColorStop(0,fill[0]); g.addColorStop(0.5,fill[1]); g.addColorStop(1,fill[2]);
+  ctx.fillStyle=g;
+  ctx.fillRect(0,-w/2,len,w);
+  ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1.2;
+  ctx.strokeRect(0,-w/2,len,w);
+  ctx.restore();
+}
+function drawArmJoint(p,r){
+  ctx.fillStyle='#8b97a8';
+  ctx.beginPath(); ctx.arc(p.x,p.y,r,0,TAU); ctx.fill();
+  ctx.strokeStyle='#20262f'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='#2b3341';
+  ctx.beginPath(); ctx.arc(p.x,p.y,r*0.4,0,TAU); ctx.fill();
+}
+function drawArm(){
+  const arm=state.arm;
+  if(!arm.job && arm.door<=0) return;
+  const h=layout.armHole, R=layout.barrelR, P=layout.armPincer;
+  const sh=armShoulder();
+  const {elbow, wrist}=armSolve(sh, arm.wrist||armColumnWrist(sh), arm.side);
+  const steel=['#6b778a','#4a5568','#2b3341'];
+  withHoleClip(h, arm.door, ()=>{
+    // mast out of the opening
+    const mw=R*0.5;
+    drawArmBar({x:h.x, y:h.y+layout.armSeg*3}, sh, mw, steel);
+    drawArmBar(sh, elbow, R*0.34, steel);
+    drawArmBar(elbow, wrist, R*0.26, steel);
+    drawArmJoint(sh, R*0.26);
+    drawArmJoint(elbow, R*0.22);
+    if(arm.carrying>=0) drawBarrel(armBarrelAnchor(wrist), arm.carrying, true);
+    drawArmJoint(wrist, R*0.17);
+    // pincers: two triangles that swing in to clamp the lid
+    const tipX=lerp(R*1.25, R*0.98, arm.grip);
+    ctx.fillStyle='#c98a2d'; ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1.2;
+    for(const s of [-1,1]){
+      ctx.beginPath();
+      ctx.moveTo(wrist.x+s*R*0.1, wrist.y);
+      ctx.lineTo(wrist.x+s*R*0.34, wrist.y-R*0.04);
+      ctx.lineTo(wrist.x+s*tipX, wrist.y+P);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  });
+}
+function drawBarrel(anchor,i,noShadow){
   const b=state.barrels[i];
   const R=layout.barrelR, ry=R*0.42, Hh=layout.barrelH;
   const topY=anchor.y-Hh, bottomY=anchor.y;
@@ -2266,8 +2549,10 @@ function drawBarrel(anchor,i){
 
   ctx.save();
 
-  ctx.fillStyle='#0c1016';
-  ctx.beginPath(); ctx.ellipse(anchor.x,bottomY,R*1.08, ry*1.1,0,0,TAU); ctx.fill();
+  if(!noShadow){
+    ctx.fillStyle='#0c1016';
+    ctx.beginPath(); ctx.ellipse(anchor.x,bottomY,R*1.08, ry*1.1,0,0,TAU); ctx.fill();
+  }
 
   const bodyGrad=ctx.createLinearGradient(anchor.x-R,0,anchor.x+R,0);
   bodyGrad.addColorStop(0,'#20262f');
