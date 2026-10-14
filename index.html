@@ -252,6 +252,12 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 
 <script>
 (function(){
+// Snapshot of this page's own markup, taken before any script touches the DOM; the live-update
+// check compares it against a freshly fetched copy (see bottom of file).
+const PAGE_FP = pageFingerprint(document);
+function pageFingerprint(doc){
+  return (doc.head.innerHTML + '\u0000' + doc.body.innerHTML).replace(/\s+$/,'');
+}
 "use strict";
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -3275,7 +3281,7 @@ resize();
 // load off-screen). Positions are rescaled if the window size changed.
 const SaveGame = (()=>{
   const KEY='cargoSort.save', VERSION=1, INTERVAL=2;
-  let gen=0, busy=false, again=false, timer=0;
+  let gen=0, timer=0, chain=Promise.resolve();
   const hasGzip = typeof CompressionStream!=='undefined' && typeof DecompressionStream!=='undefined';
   const toB64 = bytes => { let s=''; for(let i=0;i<bytes.length;i+=0x8000) s+=String.fromCharCode.apply(null, bytes.subarray(i,i+0x8000)); return btoa(s); };
   const fromB64 = b64 => Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
@@ -3312,16 +3318,17 @@ const SaveGame = (()=>{
       aliens,
     };
   }
-  async function save(){
-    if(!canSave()) return;
-    if(busy){ again=true; return; }
-    busy=true;
-    try{
-      const g=gen, str=await encode(snapshot());
-      if(g===gen) localStorage.setItem(KEY, str);    // a clear() while encoding wins
-    }catch(e){ /* storage full / blocked: keep playing */ }
-    busy=false;
-    if(again){ again=false; save(); }
+  // Saves run one after another; the returned promise settles once this save is written.
+  function save(){
+    if(!canSave()) return chain;
+    const g=gen, snap=snapshot();
+    chain = chain.then(async ()=>{
+      try{
+        const str=await encode(snap);
+        if(g===gen) localStorage.setItem(KEY, str);  // a clear() while encoding wins
+      }catch(e){ /* storage full / blocked: keep playing */ }
+    });
+    return chain;
   }
   function clear(){ gen++; try{ localStorage.removeItem(KEY); }catch(e){} }
   async function load(){
@@ -3421,13 +3428,17 @@ function restoreGame(d){
 
 let pendingSave=null;
 SaveGame.load().then(d=>{
+  const auto = takeAutoResumeFlag();
   if(!d || state.phase!=='intro') return;
   pendingSave=d;
+  // Reloaded by the live-update check: drop straight back into the game.
+  if(auto){ beginShift(true, true); return; }
   document.getElementById('startBtn').textContent='RESUME SHIFT · SECTOR '+String(d.sector).padStart(2,'0');
   document.getElementById('newShiftBtn').classList.remove('hidden');
 });
-function beginShift(resume){
-  AudioEngine.init();
+function beginShift(resume, auto){
+  if(!auto) AudioEngine.init(); // auto-resume has no click to unlock audio; the first tap does it
+  takeAutoResumeFlag();
   document.getElementById('startOverlay').classList.add('hidden');
   state.phase='playing';
   if(resume && pendingSave){
@@ -3441,6 +3452,49 @@ function beginShift(resume){
   startLevel(1);
 }
 document.getElementById('startBtn').addEventListener('click', ()=>beginShift(true));
+function takeAutoResumeFlag(){
+  try{ const f=sessionStorage.getItem('cargoSort.autoResume'); sessionStorage.removeItem('cargoSort.autoResume'); return f==='1'; }
+  catch(e){ return false; }
+}
+
+// ---------- Live update (GitHub Pages only) ----------
+// Every 30s, re-fetch this page (cache-busted past GitHub's CDN) and compare it with the markup this
+// tab actually loaded. If it differs: save, then reload (also cache-busted) and resume automatically.
+// The reload waits while something is in the tractor beam so a drag isn't cut off. If a reload
+// still doesn't bring in that exact new version (CDN lag, a browser extension editing the page),
+// it won't reload for it again, so it can never get into a reload loop.
+(()=>{
+  if(location.origin!=='https://neonms92.github.io' ||
+     !['/cargo-sort/', '/cargo-sort/index.html'].includes(location.pathname)) return;
+  if(/[?&]v=\d+/.test(location.search)) history.replaceState(null, '', location.pathname + location.hash); // tidy the address bar
+  const KEY = 'cargoSort.updateTarget';
+  const hash = str => { let h=0x811c9dc5; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,0x01000193); } return (h>>>0).toString(36) + ':' + str.length; };
+  let triedTarget = null;
+  try{ triedTarget = sessionStorage.getItem(KEY); }catch(e){}
+  let updating = false;
+  async function check(){
+    if(updating || document.visibilityState==='hidden') return;
+    let text;
+    try{
+      const r = await fetch(location.pathname + '?v=' + Date.now(), {cache:'no-store'});
+      if(!r.ok) return;
+      text = await r.text();
+    }catch(e){ return; }
+    const fresh = pageFingerprint(new DOMParser().parseFromString(text, 'text/html'));
+    if(fresh === PAGE_FP) return;
+    const target = hash(fresh);
+    if(target === triedTarget) return;           // already reloaded for this one; it didn't take
+    updating = true;
+    while(state.held) await new Promise(r=>setTimeout(r, 250));
+    if(state.phase==='playing' && !state.breaching){
+      await SaveGame.save();
+      try{ sessionStorage.setItem('cargoSort.autoResume','1'); }catch(e){}
+    }
+    try{ sessionStorage.setItem(KEY, target); }catch(e){}
+    location.replace(location.pathname + '?v=' + Date.now() + location.hash);
+  }
+  setInterval(check, 30000);
+})();
 document.getElementById('newShiftBtn').addEventListener('click', ()=>beginShift(false));
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
