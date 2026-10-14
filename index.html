@@ -3219,8 +3219,16 @@ audioToggle.addEventListener('click', ()=>{
   document.getElementById('audioLabel').textContent = audioOn? 'COMMS ON':'COMMS OFF';
 });
 document.getElementById('secretSpawnBtn').addEventListener('click', ()=>{
+  // Debug spawn: straight into the off-screen gap (as if it had just walked off track 1), so it
+  // gets the checkpoint rolls and then walks in along the far track.
   if(state.phase==='playing'){
-    state.aliens.push(createAlien());
+    const a=createAlien();
+    a.state='settled'; a.walkPhase='gap'; a.waitTimer=ALIEN_TRACK_GAP_SECONDS;
+    a.track=1; a.greeted=true; a.walksReverse=Math.random()<0.5;
+    a.scale=a.targetScale=ALIEN_TRACK1_SCALE;
+    a.x=a.baseX = a.walksReverse ? -ALIEN_TRACK_EDGE_MARGIN*3 : W + ALIEN_TRACK_EDGE_MARGIN*3;
+    a.y=a.baseY = layout.floorBottom - a.size*0.4;
+    state.aliens.push(a);
   }
 });
 
