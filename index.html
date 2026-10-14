@@ -179,6 +179,11 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
   box-shadow:0 0 26px rgba(91,230,217,0.45);
 }
 .bigBtn:active{transform:translateY(1px);}
+.linkBtn{
+  display:block; margin:14px auto 0; background:none; border:none; cursor:pointer;
+  font-family:var(--font-display); font-size:11px; letter-spacing:2px; color:var(--text-mid); text-decoration:underline;
+}
+.linkBtn.hidden{display:none;}
 .bigBtn.danger{background:linear-gradient(180deg, var(--danger), #a52d2d); color:#2a0808; box-shadow:0 0 26px rgba(255,82,82,0.4);}
 
 
@@ -234,6 +239,7 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
       <div class="rule"><b>EJECT</b> Tap a barrel to jettison its contents. Drag a rock through the open iris to jettison just that rock.</div>
     </div>
     <button class="bigBtn" id="startBtn">BEGIN SHIFT</button>
+    <button class="linkBtn hidden" id="newShiftBtn">START A NEW SHIFT INSTEAD</button>
   </div>
 
   <div id="endOverlay" class="overlay hidden">
@@ -1137,29 +1143,28 @@ function toast(text, sub, cls, dur){
   }, dur||1800);
 }
 
-function damageHull(amount){
-  state.hull = clamp(state.hull-amount, 0, 100);
+function renderHull(){
   document.getElementById('hullPct').textContent = Math.round(state.hull)+'%';
   const fill=document.getElementById('hullBarFill');
   fill.style.width = state.hull+'%';
   if(state.hull<30) fill.style.background='linear-gradient(90deg,#a52d2d,var(--danger))';
   else if(state.hull<65) fill.style.background='linear-gradient(90deg,#c98a2d,var(--amber))';
   else fill.style.background='linear-gradient(90deg,#3fce8a,var(--success))';
+}
+function damageHull(amount){
+  state.hull = clamp(state.hull-amount, 0, 100);
+  renderHull();
   state.warnT=0.5;
   state.shake = Math.min(state.shake+18, 26);
   if(state.hull<=0 && state.phase==='playing' && !state.breaching){
     state.breaching = true;
+    SaveGame.clear(); // the shift is lost; don't let a reload undo it
     playHullBreachSequence();
   }
 }
 function healHull(amount){
   state.hull = clamp(state.hull+amount, 0, 100);
-  document.getElementById('hullPct').textContent = Math.round(state.hull)+'%';
-  const fill=document.getElementById('hullBarFill');
-  fill.style.width = state.hull+'%';
-  if(state.hull<30) fill.style.background='linear-gradient(90deg,#a52d2d,var(--danger))';
-  else if(state.hull<65) fill.style.background='linear-gradient(90deg,#c98a2d,var(--amber))';
-  else fill.style.background='linear-gradient(90deg,#3fce8a,var(--success))';
+  renderHull();
 }
 function playHullBreachSequence(){
   state.phase='breach';
@@ -2090,6 +2095,7 @@ function update(){
     if(state.spawnTimer<=0){ trySpawnRandom(); state.spawnTimer = rand(0.7,1.3); }
   }
   if(state.phase==='transition' && state.transition){ updateTransition(dt); }
+  SaveGame.tick(dt);
 
   updateArm(dt);
   updateBarrelSlots(dt);
@@ -3261,22 +3267,184 @@ function loop(){
 
 resize();
 
-document.getElementById('startBtn').addEventListener('click', ()=>{
+// ---------- Save / load ----------
+// Autosaved to localStorage (gzip + base64) every couple of seconds while playing, and when the
+// tab is hidden. Saved: sector, hull, barrels, iris + lever, and every onboard alien (position,
+// velocity, off-screen timer, stack links). Not saved: rocks (respawn), the robot arm (a sealed
+// barrel loads as already retrieved), and in-progress peeks / unjams / abductions (those aliens
+// load off-screen). Positions are rescaled if the window size changed.
+const SaveGame = (()=>{
+  const KEY='cargoSort.save', VERSION=1, INTERVAL=2;
+  let gen=0, busy=false, again=false, timer=0;
+  const hasGzip = typeof CompressionStream!=='undefined' && typeof DecompressionStream!=='undefined';
+  const toB64 = bytes => { let s=''; for(let i=0;i<bytes.length;i+=0x8000) s+=String.fromCharCode.apply(null, bytes.subarray(i,i+0x8000)); return btoa(s); };
+  const fromB64 = b64 => Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
+  const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+  async function encode(obj){
+    const json=JSON.stringify(obj, (k,v)=> typeof v==='number' ? Math.round(v*1000)/1000 : v);
+    if(!hasGzip) return 'js1:'+json;
+    return 'gz1:'+toB64(await pipe(new TextEncoder().encode(json), new CompressionStream('gzip')));
+  }
+  async function decode(str){
+    if(str.startsWith('js1:')) return JSON.parse(str.slice(4));
+    if(str.startsWith('gz1:')) return JSON.parse(new TextDecoder().decode(await pipe(fromB64(str.slice(4)), new DecompressionStream('gzip'))));
+    throw new Error('unknown save format');
+  }
+  const ALIEN_SKIP = new Set(['avatarImg','ridingOn','rider']);
+  function snapshot(){
+    const aliens=[];
+    for(const a of state.aliens){
+      if(a.state==='ejected') continue;            // already on its way out the iris
+      const o={};
+      for(const k in a) if(!ALIEN_SKIP.has(k)) o[k]=a[k];
+      o.ridingOn = a.ridingOn ? a.ridingOn.id : null;
+      o.rider = a.rider ? a.rider.id : null;
+      o.avatarSrc = a.avatarImg ? a.avatarImg.src : null;
+      aliens.push(o);
+    }
+    return {
+      v:VERSION, W, H, sector:state.sector, hull:state.hull,
+      irisOpen:state.irisOpen, irisTarget:state.irisTarget, leverDown:state.leverDown,
+      nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector,
+      alienCloneCounters:state.alienCloneCounters,
+      barrels:state.barrels.map(b=>({value:b.value, text:b.text, pie:b.pie, slots:b.slots, sealed:b.sealed,
+        fillDisplay:b.fillDisplay, status:b.status, door:b.door, riseT:b.riseT, destroyT:b.destroyT||0})),
+      aliens,
+    };
+  }
+  async function save(){
+    if(!canSave()) return;
+    if(busy){ again=true; return; }
+    busy=true;
+    try{
+      const g=gen, str=await encode(snapshot());
+      if(g===gen) localStorage.setItem(KEY, str);    // a clear() while encoding wins
+    }catch(e){ /* storage full / blocked: keep playing */ }
+    busy=false;
+    if(again){ again=false; save(); }
+  }
+  function clear(){ gen++; try{ localStorage.removeItem(KEY); }catch(e){} }
+  async function load(){
+    let str=null;
+    try{ str=localStorage.getItem(KEY); }catch(e){ return null; }
+    if(!str) return null;
+    try{
+      const d=await decode(str);
+      if(!d || d.v!==VERSION) throw new Error('version');
+      return d;
+    }catch(e){ clear(); return null; }
+  }
+  const canSave = () => state.phase==='playing' && !state.breaching;
+  function tick(dt){
+    if(!canSave()){ timer=0; return; }
+    timer+=dt;
+    if(timer>=INTERVAL){ timer=0; save(); }
+  }
+  const flush = () => { if(canSave()) save(); };
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') flush(); });
+  window.addEventListener('pagehide', flush);
+  return {save, clear, load, tick, snapshot};
+})();
+
+function sendAlienOffscreen(a){
+  a.state='settled'; a.walkPhase='gap'; a.waitTimer=ALIEN_TRACK_GAP_SECONDS; a.track=1;
+  a.fvx=a.fvy=0; a.kicked=false; a.fallToTrack2=false; a.hidingInBarrel=null; a.hideJumpOut=false;
+  a.scale=a.targetScale=ALIEN_TRACK1_SCALE;
+  a.x=a.baseX = a.walksReverse ? -ALIEN_TRACK_EDGE_MARGIN*3 : W + ALIEN_TRACK_EDGE_MARGIN*3;
+  a.y=a.baseY = layout.floorBottom - a.size*0.4;
+}
+function restoreGame(d){
+  state.sector=d.sector;
+  document.getElementById('sectorValue').textContent = String(d.sector).padStart(2,'0');
+  state.hull=d.hull; renderHull();
+  state.irisOpen=d.irisOpen; state.irisTarget=d.irisTarget; state.leverDown=!!d.leverDown;
+  state.nebulaHue=d.nebulaHue; state.nebulaBlobs=makeNebula(state.nebulaHue);
+  state.alienSpawnedThisSector=!!d.alienSpawnedThisSector;
+  state.alienCloneCounters=d.alienCloneCounters||{};
+  state.particles=[]; state.rocks=[]; state.held=null; state.breaching=false; state.transition=null;
+
+  state.barrels.forEach((b,i)=>{
+    const s=d.barrels[i]||{};
+    endSlotPeek(b);
+    Object.assign(b, {value:s.value||null, text:s.text||null, pie:s.pie||null, slots:s.slots||0, sealed:!!s.sealed,
+      fillDisplay:s.fillDisplay||0, status:s.status||'ready', door:s.door||0, riseT:s.riseT||0, destroyT:s.destroyT||0,
+      flashT:0, sealT:0});
+    if(b.sealed){ b.status='gone'; b.door=0; }      // sealed = already hauled away by the arm
+    else if(b.status==='carried' || b.status==='gone'){ b.status='rising'; b.riseT=0; b.door=0; }
+  });
+  resetArm();
+  updateBarrelDots();
+
+  // Aliens: rebuild objects, then relink stacks by id.
+  const sx = d.W ? W/d.W : 1, sy = d.H ? H/d.H : 1;
+  const imgs = {}, byId = {};
+  const aliens = d.aliens.map(o=>{
+    const a = Object.assign(createAlien(true), o);
+    a.x*=sx; a.baseX*=sx; a.y*=sy; a.baseY*=sy;
+    if(ALIEN_FACE_MODE==='gravatar'){
+      // same face as before; clones share one image
+      a.avatarLoaded=false; a.avatarFailed=false;
+      if(o.avatarSrc){
+        if(!imgs[o.avatarSrc]){
+          const img=new Image(), group=[];
+          img.onload=()=>group.forEach(x=>x.avatarLoaded=true);
+          img.onerror=()=>group.forEach(x=>{x.avatarLoaded=false; x.avatarFailed=true;});
+          img.src=o.avatarSrc; imgs[o.avatarSrc]={img, group};
+        }
+        a.avatarImg=imgs[o.avatarSrc].img; imgs[o.avatarSrc].group.push(a);
+      } else loadAlienAvatar(a);
+    }
+    delete a.avatarSrc;
+    byId[a.id]=a;
+    return a;
+  });
+  aliens.forEach(a=>{
+    a.ridingOn = a.ridingOn ? byId[a.ridingOn]||null : null;
+    a.rider = a.rider ? byId[a.rider]||null : null;
+  });
+  aliens.forEach(a=>{
+    if(a.ridingOn && a.ridingOn.rider!==a) a.ridingOn=null;
+    if(a.rider && a.rider.ridingOn!==a) a.rider=null;
+    a.borrowed=false; a.vel=null;
+    if(a.state==='held'){ a.state='falling'; a.fvx=0; a.fvy=0; }   // the beam lets go
+    if(a.state==='jammed' || a.state==='abducted') sendAlienOffscreen(a);
+    if(a.walkPhase==='riding' && !a.ridingOn) sendAlienOffscreen(a);
+    if(a.walkPhase==='hiding' && !(state.barrels[a.hidingInBarrel] && state.barrels[a.hidingInBarrel].status==='ready')) sendAlienOffscreen(a);
+    const n=parseInt(String(a.id).replace(/\D/g,''),10);
+    if(n>=ROCK_ID) ROCK_ID=n+1;
+  });
+  state.aliens=aliens;
+  updateAlienStacks(0);
+  state.spawnTimer=0;
+  for(let i=0;i<4;i++) trySpawnRandom();
+}
+
+let pendingSave=null;
+SaveGame.load().then(d=>{
+  if(!d || state.phase!=='intro') return;
+  pendingSave=d;
+  document.getElementById('startBtn').textContent='RESUME SHIFT · SECTOR '+String(d.sector).padStart(2,'0');
+  document.getElementById('newShiftBtn').classList.remove('hidden');
+});
+function beginShift(resume){
   AudioEngine.init();
   document.getElementById('startOverlay').classList.add('hidden');
   state.phase='playing';
-  state.hull=100;
-  document.getElementById('hullBarFill').style.width='100%';
-  document.getElementById('hullBarFill').style.background='linear-gradient(90deg,#3fce8a,var(--success))';
-  document.getElementById('hullPct').textContent='100%';
+  if(resume && pendingSave){
+    try{ restoreGame(pendingSave); pendingSave=null; return; }
+    catch(e){ console.warn('Save could not be restored', e); SaveGame.clear(); }
+  }
+  pendingSave=null;
+  SaveGame.clear();
+  state.aliens=[]; state.alienCloneCounters={}; state.leverDown=false; state.irisOpen=1; state.irisTarget=1;
+  state.hull=100; renderHull();
   startLevel(1);
-});
+}
+document.getElementById('startBtn').addEventListener('click', ()=>beginShift(true));
+document.getElementById('newShiftBtn').addEventListener('click', ()=>beginShift(false));
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
-  state.hull=100;
-  document.getElementById('hullBarFill').style.width='100%';
-  document.getElementById('hullBarFill').style.background='linear-gradient(90deg,#3fce8a,var(--success))';
-  document.getElementById('hullPct').textContent='100%';
+  state.hull=100; renderHull();
   state.particles=[];
   state.rocks=[];
   state.aliens=[];
