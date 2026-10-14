@@ -579,7 +579,7 @@ const state={
   barrels:[0,1,2,3].map(()=>({value:null, text:null, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
             status:'ready', door:0, riseT:0})),
   // Robot arm: one job at a time; sealed barrels wait in `queue` (barrel indices, FIFO).
-  arm:{queue:[], job:null, door:0, shY:0, wrist:null, grip:0, carrying:-1, side:1},
+  arm:{queue:[], job:null, door:0, shY:0, wrist:null, carrying:-1, side:1, elbowLock:null, forearmAng:0},
   rocks:[],
   aliens:[],
   alienSpawnedThisSector:false,
@@ -1037,7 +1037,7 @@ function createAlien(skipAvatarLoad){
     hidingInBarrel:null, hideJumpOut:false,
     climbRolled:false, climbDir:0, climbAngle:0, climbSweep:0, climbProgress:0, fallToTrack2:false,
     walkMult:1, walkDistLeft:0,
-    ridingOn:null, rider:null, tumbled:false,
+    ridingOn:null, rider:null, tumbled:false, kicked:false,
     leverRolled:false,
   };
   rollAlienWalkSpeed(alien);
@@ -1542,20 +1542,35 @@ function ejectBarrel(idx){
 }
 
 // ---------- Robot arm & floor doors ----------
-// One job at a time. A retrieval: doors open → arm rises → reaches the barrel → grips the lid →
-// carries it over the arm's opening → pulls it down out of sight → doors close. ≈3s total.
-const ARM_STEPS = ['wait','open','rise','reach','grip','carry','lower','close'];
-const ARM_STEP_DUR = {wait:0.35, open:0.3, rise:0.3, reach:0.5, grip:0.2, carry:0.7, lower:0.6, close:0.3};
+// One job at a time from a FIFO queue of {type, ...} items.
+//  retrieve: doors open → arm rises → reaches the barrel → grabs the lid (magnet) → carries it
+//            over the arm's opening → pulls it down out of sight → doors close.        ≈3.25s
+//  unjam:    doors open → arm rises holding a stuck alien → sets it down beside the opening →
+//            lifts off → swings the forearm 360° around the elbow and kicks the alien off-screen →
+//            retracts → doors close.                                                  ≈3.3s
+const ARM_JOBS = {
+  retrieve: {steps:['wait','open','rise','reach','grip','carry','lower','close'],
+             dur:{wait:0.35, open:0.3, rise:0.3, reach:0.5, grip:0.2, carry:0.7, lower:0.6, close:0.3}},
+  unjam:    {steps:['wait','open','rise','place','release','swing','retract','sink','close'],
+             dur:{wait:0.2, open:0.3, rise:0.4, place:0.5, release:0.15, swing:0.8, retract:0.35, sink:0.35, close:0.3}},
+};
 const SLOT_DOOR_DUR = 0.3, SLOT_RISE_DUR = 0.6;
 const smooth01 = u => u*u*(3-2*u);
 
+const ALIEN_JAM_CHANCE = 0.10;
+const ALIEN_JAM_MESSAGES = ["Little help here?", "It's cramped in there!", "Which way's the exit?", "I was just looking!"];
+const ALIEN_KICK_MESSAGES = ["Rude!", "Was it something I said?", "I'll be baaack!", "Worth it!"];
+
 function resetArm(){
   const arm=state.arm;
-  arm.queue=[]; arm.job=null; arm.door=0; arm.grip=0; arm.carrying=-1; arm.wrist=null; arm.side=1;
+  arm.queue=[]; arm.job=null; arm.door=0; arm.carrying=-1; arm.wrist=null; arm.side=1;
+  arm.elbowLock=null; arm.forearmAng=0;
   arm.shY=armHiddenShY();
 }
 function queueArmRetrieval(idx){
-  if(!state.arm.queue.includes(idx) && !(state.arm.job && state.arm.job.idx===idx)) state.arm.queue.push(idx);
+  const arm=state.arm;
+  const dup = it => it.type==='retrieve' && it.idx===idx;
+  if(!arm.queue.some(dup) && !(arm.job && dup(arm.job))) arm.queue.push({type:'retrieve', idx});
 }
 function armIdle(){ return !state.arm.job && state.arm.queue.length===0; }
 // The shoulder rides on a telescoping mast. Whenever the arm passes through the opening it is
@@ -1585,20 +1600,83 @@ function armSolve(sh, target, side){
   const wrist={x:sh.x+Math.cos(base)*d, y:sh.y+Math.sin(base)*d};
   return {elbow, wrist};
 }
-function startArmJob(idx){
+// Current arm pose; during the swing the elbow is frozen and the forearm spins around it.
+function armPose(){
+  const arm=state.arm, sh=armShoulder();
+  if(arm.elbowLock){
+    const L=layout.armSeg, e=arm.elbowLock;
+    return {sh, elbow:e, wrist:{x:e.x+Math.cos(arm.forearmAng)*L, y:e.y+Math.sin(arm.forearmAng)*L}};
+  }
+  const s=armSolve(sh, arm.wrist||armColumnWrist(sh), arm.side);
+  return {sh, elbow:s.elbow, wrist:s.wrist};
+}
+
+// --- jammed aliens ---
+// Perspective scale for something standing at screen y on the bay floor (same rule as falling objects).
+function floorScaleAt(y){
+  const pTop = layout.iris.cy - layout.iris.r*0.2, pBottom = layout.floorBottom;
+  return lerp(0.62, 1.7, clamp((y-pTop)/(pBottom-pTop), 0, 1));
+}
+// Off-screen checkpoint roll: the alien wanders into the robot arm's compartment and gets stuck.
+function maybeTriggerJam(a){
+  if(alienInStack(a) || Math.random()>=ALIEN_JAM_CHANCE) return false;
+  a.state = 'jammed';
+  a.walkPhase = null;
+  a.x = a.baseX = layout.armHole.x; a.y = a.baseY = layout.armHole.y + layout.barrelH; // down in the hole
+  state.arm.queue.push({type:'unjam', alien:a});
+  return true;
+}
+// Where the stuck alien hangs from the wrist magnet.
+function jamAlienHang(a, wrist){
+  const sc=floorScaleAt(wrist.y);
+  return {x:wrist.x, y:wrist.y + a.size*sc*1.05, scale:sc};
+}
+// Spot on the floor beside the opening where the arm sets the alien down.
+function jamSetDownSpot(a, side){
+  const h=layout.armHole;
+  const y=h.y - a.size*0.4;
+  const sc=floorScaleAt(y);
+  return {x:h.x + side*(h.rx + a.size*sc*0.9 + 4), y, scale:sc};
+}
+// Boot the alien in an arc that lands past the screen edge on its side, then it rejoins the
+// normal off-screen gap and wanders back in later.
+function kickJammedAlien(a, side){
+  a.state='falling';
+  a.kicked=true; a.fallToTrack2=false; a.walkPhase=null;
+  a.walksReverse = side<0;   // landing off the left edge → next pass comes from the left, like track 1 does
+  const g=420, vy=-rand(330,400);
+  const floorY = layout.floorBottom - a.size*0.4;
+  const t = (-vy + Math.sqrt(vy*vy + 2*g*Math.max(0, floorY-a.y)))/g;
+  const target = side>0 ? W + ALIEN_TRACK_EDGE_MARGIN + a.size*1.7*2 : -ALIEN_TRACK_EDGE_MARGIN - a.size*1.7*2;
+  a.fvy = vy;
+  a.fvx = (target - a.x)/t * rand(1.05,1.25);
+  a.message = choice(ALIEN_KICK_MESSAGES);
+  a.bubbleT = 3;
+  AudioEngine.eject();
+}
+
+function startArmJob(item){
   const arm=state.arm;
-  arm.job={idx, step:'wait', t:0};
-  // Elbow up: for a barrel left of the opening that's the +offset solution, right is −offset.
-  arm.side = layout.barrels4[idx].x < layout.armHole.x ? 1 : -1;
+  arm.job={...item, step:'wait', t:0};
+  arm.elbowLock=null;
+  if(item.type==='retrieve'){
+    // Elbow up: for a barrel left of the opening that's the +offset solution, right is −offset.
+    arm.side = layout.barrels4[item.idx].x < layout.armHole.x ? 1 : -1;
+  } else {
+    arm.job.placeSide = Math.random()<0.5 ? -1 : 1;  // roll: set the alien down left or right
+    arm.side = arm.job.placeSide<0 ? 1 : -1;
+  }
 }
 function advanceArmStep(job){
-  const i=ARM_STEPS.indexOf(job.step);
+  const steps=ARM_JOBS[job.type].steps;
+  const i=steps.indexOf(job.step);
   job.t=0;
-  job.step = ARM_STEPS[i+1] || 'done';
-  const s=job.step;
-  if(s==='open' || s==='close') AudioEngine.servo(140, s==='open'?220:110, ARM_STEP_DUR[s]);
-  else if(s==='rise' || s==='reach' || s==='carry') AudioEngine.servo(90, 170, ARM_STEP_DUR[s]);
-  else if(s==='lower') AudioEngine.servo(170, 70, ARM_STEP_DUR[s]);
+  job.step = steps[i+1] || 'done';
+  const s=job.step, d=ARM_JOBS[job.type].dur[s];
+  if(s==='open' || s==='close') AudioEngine.servo(140, s==='open'?220:110, d);
+  else if(s==='rise' || s==='reach' || s==='carry' || s==='place' || s==='retract') AudioEngine.servo(90, 170, d);
+  else if(s==='swing') AudioEngine.servo(120, 320, d);
+  else if(s==='lower' || s==='sink') AudioEngine.servo(170, 70, d);
 }
 function updateArm(dt){
   const arm=state.arm;
@@ -1606,8 +1684,13 @@ function updateArm(dt){
   const job=arm.job;
   if(!job){ arm.wrist=null; return; }
   job.t+=dt;
-  const dur=ARM_STEP_DUR[job.step];
-  const u=clamp(job.t/dur,0,1), e=smooth01(u);
+  const u=clamp(job.t/ARM_JOBS[job.type].dur[job.step],0,1), e=smooth01(u);
+  if(job.type==='retrieve') updateRetrieveJob(arm, job, u, e);
+  else updateUnjamJob(arm, job, u, e);
+  if(u>=1) advanceArmStep(job);
+  if(job.step==='done'){ arm.job=null; arm.door=0; arm.shY=armHiddenShY(); arm.wrist=null; arm.elbowLock=null; }
+}
+function updateRetrieveJob(arm, job, u, e){
   const R=layout.barrelR;
   const anchor=layout.barrels4[job.idx];
   switch(job.step){
@@ -1621,7 +1704,7 @@ function updateArm(dt){
       break;
     }
     case 'grip':
-      arm.wrist=armGrabWrist(anchor); arm.grip=e;
+      arm.wrist=armGrabWrist(anchor);
       if(u>=1){ state.barrels[job.idx].status='carried'; arm.carrying=job.idx; AudioEngine.uiBlip(180); }
       break;
     case 'carry': {
@@ -1634,13 +1717,73 @@ function updateArm(dt){
       const d=armSinkDepth()*e, from=armCarryWrist();
       arm.shY=armColumnShY()+d;
       arm.wrist={x:from.x, y:from.y+d};
-      if(u>=1){ state.barrels[job.idx].status='gone'; arm.carrying=-1; arm.grip=0; }
+      if(u>=1){ state.barrels[job.idx].status='gone'; arm.carrying=-1; }
       break;
     }
     case 'close': arm.door=1-e; break;
   }
-  if(u>=1) advanceArmStep(job);
-  if(job.step==='done'){ arm.job=null; arm.door=0; arm.shY=armHiddenShY(); arm.wrist=null; }
+}
+function updateUnjamJob(arm, job, u, e){
+  const a=job.alien, R=layout.barrelR, L=layout.armSeg;
+  const side=job.placeSide;
+  // Keep the alien glued to the magnet while it's being carried.
+  const hang = () => { const w=armPose().wrist, p=jamAlienHang(a, w); a.x=a.baseX=p.x; a.y=a.baseY=p.y; a.scale=a.targetScale=p.scale; };
+  switch(job.step){
+    case 'wait': break;
+    case 'open': arm.door=e; break;
+    case 'rise':
+      if(job.t<=1/30){ a.message=choice(ALIEN_JAM_MESSAGES); a.bubbleT=3; }
+      arm.shY=lerp(armHiddenShY(), armColumnShY(), e); arm.wrist=armColumnWrist(armShoulder());
+      hang();
+      break;
+    case 'place': {
+      arm.shY=lerp(armColumnShY(), armUpShY(), e);
+      const spot=jamSetDownSpot(a, side);
+      const to={x:spot.x, y:spot.y - a.size*spot.scale*1.05};
+      const from=armCarryWrist();
+      arm.wrist={x:lerp(from.x,to.x,e), y:lerp(from.y,to.y,e) - Math.sin(Math.PI*u)*R*1.0};
+      hang();
+      if(u>=1){ a.x=a.baseX=spot.x; a.y=a.baseY=spot.y; a.scale=a.targetScale=spot.scale; }
+      break;
+    }
+    case 'release': {
+      // magnet off; the arm lifts clear of the alien's head
+      const spot=jamSetDownSpot(a, side);
+      const base={x:spot.x, y:spot.y - a.size*spot.scale*1.05};
+      arm.wrist={x:base.x, y:base.y - R*0.8*e};
+      a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
+      if(u>=1){
+        const p=armPose();
+        arm.elbowLock=p.elbow;
+        job.ang0=Math.atan2(p.wrist.y-p.elbow.y, p.wrist.x-p.elbow.x);
+        // spin so the wrist is travelling outward (toward `side`) as it comes back around to the alien
+        const s=-Math.sin(job.ang0)*side;
+        job.spin = s>=0 ? 1 : -1;
+        arm.forearmAng=job.ang0;
+      }
+      break;
+    }
+    case 'swing':
+      arm.forearmAng = job.ang0 + job.spin*TAU*e;
+      if(!job.kicked && u>=0.92){ job.kicked=true; kickJammedAlien(a, side); }
+      if(u>=1){ // hand the pose back to IK from where the forearm finished
+        arm.wrist=armPose().wrist; arm.elbowLock=null; job.retractFrom=arm.wrist;
+      }
+      break;
+    case 'retract': {
+      arm.shY=lerp(armUpShY(), armColumnShY(), e);
+      const from=job.retractFrom||armCarryWrist(), to=armCarryWrist();
+      arm.wrist={x:lerp(from.x,to.x,e), y:lerp(from.y,to.y,e)};
+      break;
+    }
+    case 'sink': {
+      const d=armSinkDepth()*e, from=armCarryWrist();
+      arm.shY=armColumnShY()+d;
+      arm.wrist={x:from.x, y:from.y+d};
+      break;
+    }
+    case 'close': arm.door=1-e; break;
+  }
 }
 function barrelRiseOffset(b){
   if(b.status!=='rising') return 0;
@@ -1799,6 +1942,18 @@ function update(){
           a.track = 2;
           a.climbRolled = true; // already dealt with the ring this pass
         }
+      } else if(a.kicked){
+        // Booted out by the robot arm: free arc (no clamping to the bay) that lands off-screen.
+        a.scale = a.targetScale = floorScaleAt(a.y);
+        const floorY = layout.floorBottom - a.size*0.4;
+        if(a.fvy>0 && a.y>=floorY){
+          a.y=floorY; a.fvy=0; a.fvx=0; a.kicked=false; a.state='settled';
+          a.baseX=a.x; a.baseY=a.y;
+          a.track=1; a.targetScale=ALIEN_TRACK1_SCALE;
+          const off = a.x < -ALIEN_TRACK_EDGE_MARGIN || a.x > W + ALIEN_TRACK_EDGE_MARGIN;
+          if(off){ a.walkPhase='gap'; a.waitTimer=ALIEN_TRACK_GAP_SECONDS; }
+          else { a.walkPhase='track1'; a.interactCooldown=0; }
+        }
       } else {
       a.x = clamp(a.x, fb.x0, fb.x1);
       const pTop = layout.iris.cy - layout.iris.r*0.2;
@@ -1891,7 +2046,7 @@ function update(){
         // in the tower here, since riders never reach this checkpoint themselves.
         const stacked = alienInStack(a);
         if(a.waitTimer<=0 && (stacked ||
-            (!maybeTriggerFixit(a) && !maybeTriggerHide(a) && !maybeTriggerStack(a)))){
+            (!maybeTriggerFixit(a) && !maybeTriggerHide(a) && !maybeTriggerStack(a) && !maybeTriggerJam(a)))){
           for(let c=a; c; c=c.rider) maybeTriggerDuplicate(c);
           a.track = 2;
           a.walkPhase = 'track2';
@@ -2183,7 +2338,7 @@ function draw(){
   drawBarrels();
   if(state.held) drawBeams();
   drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone'));
-  drawAlienList(state.aliens.filter(a=> a.state!=='floating' && a.state!=='ejected' && a.walkPhase!=='hiding' && !isFarTrackAlien(a)));
+  drawAlienList(state.aliens.filter(a=> a.state!=='floating' && a.state!=='ejected' && a.state!=='jammed' && a.walkPhase!=='hiding' && !isFarTrackAlien(a)));
   drawParticles();
   drawAlienBubbles();
 
@@ -2512,31 +2667,33 @@ function drawArmJoint(p,r){
 function drawArm(){
   const arm=state.arm;
   if(!arm.job && arm.door<=0) return;
-  const h=layout.armHole, R=layout.barrelR, P=layout.armPincer;
-  const sh=armShoulder();
-  const {elbow, wrist}=armSolve(sh, arm.wrist||armColumnWrist(sh), arm.side);
+  const h=layout.armHole, R=layout.barrelR;
+  const {sh, elbow, wrist}=armPose();
   const steel=['#6b778a','#4a5568','#2b3341'];
+  const step=arm.job ? arm.job.step : 'close';
+  // Only clip what's actually passing through the opening. A barrel or alien being carried across the
+  // floor (e.g. one of the front-row barrels, which stand lower than the opening) must not be masked.
+  const throughHole = step==='rise' || step==='lower' || step==='sink' || step==='open' || step==='close';
   withHoleClip(h, arm.door, ()=>{
-    // mast out of the opening
-    const mw=R*0.5;
-    drawArmBar({x:h.x, y:h.y+layout.armSeg*3}, sh, mw, steel);
+    drawArmBar({x:h.x, y:h.y+layout.armSeg*3}, sh, R*0.5, steel); // mast out of the opening
     drawArmBar(sh, elbow, R*0.34, steel);
     drawArmBar(elbow, wrist, R*0.26, steel);
     drawArmJoint(sh, R*0.26);
     drawArmJoint(elbow, R*0.22);
-    if(arm.carrying>=0) drawBarrel(armBarrelAnchor(wrist), arm.carrying, true);
-    drawArmJoint(wrist, R*0.17);
-    // pincers: two triangles that swing in to clamp the lid
-    const tipX=lerp(R*1.25, R*0.98, arm.grip);
-    ctx.fillStyle='#c98a2d'; ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1.2;
-    for(const s of [-1,1]){
-      ctx.beginPath();
-      ctx.moveTo(wrist.x+s*R*0.1, wrist.y);
-      ctx.lineTo(wrist.x+s*R*0.34, wrist.y-R*0.04);
-      ctx.lineTo(wrist.x+s*tipX, wrist.y+P);
-      ctx.closePath(); ctx.fill(); ctx.stroke();
-    }
   });
+  const payload = ()=>{
+    if(arm.carrying>=0) drawBarrel(armBarrelAnchor(wrist), arm.carrying, true);
+    const j=arm.job;
+    if(j && j.type==='unjam' && j.alien.state==='jammed') drawAlienList([j.alien]);
+  };
+  if(throughHole) withHoleClip(h, arm.door, payload); else payload();
+  const wristJoint = ()=>{
+    drawArmJoint(wrist, R*0.17);
+    // magnet face on the wrist
+    ctx.fillStyle='#c98a2d';
+    roundRectPath(wrist.x-R*0.22, wrist.y+R*0.1, R*0.44, R*0.12, 2); ctx.fill();
+  };
+  if(throughHole) withHoleClip(h, arm.door, wristJoint); else wristJoint();
 }
 function drawBarrel(anchor,i,noShadow){
   const b=state.barrels[i];
@@ -2550,8 +2707,9 @@ function drawBarrel(anchor,i,noShadow){
   ctx.save();
 
   if(!noShadow){
-    ctx.fillStyle='#0c1016';
-    ctx.beginPath(); ctx.ellipse(anchor.x,bottomY,R*1.08, ry*1.1,0,0,TAU); ctx.fill();
+    // soft contact shadow only, so the closed slot doors underneath still read as closed
+    ctx.fillStyle='rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.ellipse(anchor.x,bottomY,R*1.02, ry*0.95,0,0,TAU); ctx.fill();
   }
 
   const bodyGrad=ctx.createLinearGradient(anchor.x-R,0,anchor.x+R,0);
