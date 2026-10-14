@@ -955,7 +955,7 @@ function alienIsOffscreen(a){
 function maybeTriggerStack(a){
   if(a.ridingOn) return false;
   const own = new Set(); for(let c=a; c; c=c.rider) own.add(c);
-  const targets = state.aliens.filter(t=> !own.has(t) && !t.rider && !t.abductMarked && alienIsOffscreen(t));
+  const targets = state.aliens.filter(t=> !own.has(t) && !t.rider && !t.abductMarked && !t.borrowed && alienIsOffscreen(t));
   if(targets.length===0 || Math.random()>=ALIEN_STACK_CHANCE) return false;
   const target = choice(targets);
   a.ridingOn = target;
@@ -1107,7 +1107,7 @@ function trySpawnRandom(){
 function startLevel(sector, riseBarrels){
   state.sector=sector;
   document.getElementById('sectorValue').textContent = String(sector).padStart(2,'0');
-  state.barrels.forEach(b=>{b.value=null;b.text=null;b.pie=null;b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;
+  state.barrels.forEach(b=>{endSlotPeek(b); b.value=null;b.text=null;b.pie=null;b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;
     // Arriving at a new sector: fresh empties come up through the floor. Fresh start/reboot: just there.
     b.status = riseBarrels ? 'rising' : 'ready'; b.riseT = 0; b.door = 0;});
   resetArm();
@@ -1624,6 +1624,32 @@ const ARM_JOBS = {
              dur:{wait:0.1, open:0.3, rise:0.3, reach:0.55, grip:0.2, carry:0.55, lower:0.55, close:0.3}},
 };
 const SLOT_DOOR_DUR = 0.3, SLOT_RISE_DUR = 0.6;
+// When a slot's doors open, 10% of the time an off-screen alien is "borrowed" to peek up through
+// the opening for a bit before the barrel comes up. It just watches; its off-screen timer is paused.
+const SLOT_PEEK_CHANCE = 0.10;
+const SLOT_PEEK_IN = 0.35, SLOT_PEEK_HOLD = 1.9, SLOT_PEEK_OUT = 0.35;
+const SLOT_PEEK_DUR = SLOT_PEEK_IN + SLOT_PEEK_HOLD + SLOT_PEEK_OUT;
+function peekCandidates(){
+  return state.aliens.filter(a=> a.state==='settled' && a.walkPhase==='gap' && !a.borrowed && !alienInStack(a));
+}
+function startSlotPeek(b){
+  const c=peekCandidates();
+  if(!c.length || Math.random()>=SLOT_PEEK_CHANCE) return;
+  const a=choice(c);
+  a.borrowed=true;
+  b.peek={alien:a, t:0};
+}
+function endSlotPeek(b){
+  if(b.peek){ b.peek.alien.borrowed=false; b.peek=null; }
+}
+// 0..1 how far the peeking head is up out of the opening.
+function slotPeekAmount(b){
+  if(!b.peek) return 0;
+  const t=b.peek.t;
+  if(t<SLOT_PEEK_IN) return smooth01(t/SLOT_PEEK_IN);
+  if(t<SLOT_PEEK_IN+SLOT_PEEK_HOLD) return 1;
+  return 1-smooth01(clamp((t-SLOT_PEEK_IN-SLOT_PEEK_HOLD)/SLOT_PEEK_OUT,0,1));
+}
 const BARREL_RESPAWN_DELAY = 0.7; // after a mismatch blows a barrel up, before its replacement starts rising
 const smooth01 = u => u*u*(3-2*u);
 
@@ -1991,7 +2017,14 @@ function updateBarrelSlots(dt){
       if(b.destroyT<=0){ b.status='rising'; b.riseT=0; }
     }
     if(b.status==='rising'){
-      if(b.riseT===0) AudioEngine.servo(80, 160, SLOT_DOOR_DUR+SLOT_RISE_DUR);
+      if(b.riseT===0){ startSlotPeek(b); AudioEngine.servo(80, 160, b.peek ? SLOT_DOOR_DUR : SLOT_DOOR_DUR+SLOT_RISE_DUR); }
+      if(b.peek && !state.aliens.includes(b.peek.alien)) endSlotPeek(b);
+      if(b.peek && b.riseT>=SLOT_DOOR_DUR){
+        // doors are open: hold the barrel down below while the borrowed alien has its look
+        b.peek.t+=dt;
+        if(b.peek.t>=SLOT_PEEK_DUR){ endSlotPeek(b); AudioEngine.servo(100, 160, SLOT_RISE_DUR); }
+        return;
+      }
       b.riseT+=dt;
       b.door=clamp(b.riseT/SLOT_DOOR_DUR,0,1);
       if(b.riseT>=SLOT_DOOR_DUR+SLOT_RISE_DUR) b.status='ready'; // usable now; doors close underneath it
@@ -2240,7 +2273,8 @@ function update(){
           a.waitTimer = ALIEN_TRACK_GAP_SECONDS;
         }
       } else if(a.walkPhase==='gap'){
-        a.waitTimer -= dt;
+        // While borrowed to peek out of a barrel slot, the off-screen clock stands still.
+        if(!a.borrowed) a.waitTimer -= dt;
         // Anyone in a tower is locked into stacking behavior: no fixit, hide or jam, but the
         // tower's base may still climb onto another off-screen alien (taking its tower along).
         // Duplication is still allowed (the newborn spawns on its own), so it's rolled for every
@@ -2851,8 +2885,19 @@ function drawBarrelSlot(i){
   if(b.status==='gone' || b.status==='carried' || b.status==='destroyed') return;
   const a=layout.barrels4[i];
   if(b.status==='rising'){
-    const dy=barrelRiseOffset(b);
-    withHoleClip(layout.barrelHoles[i], b.door, ()=>drawBarrel({x:a.x, y:a.y+dy}, i, true));
+    const dy=barrelRiseOffset(b), h=layout.barrelHoles[i];
+    withHoleClip(h, b.door, ()=>{
+      drawBarrel({x:a.x, y:a.y+dy}, i, true);
+      const p=slotPeekAmount(b);
+      if(p>0){
+        // the borrowed alien's head, drawn here (it's still off-screen as far as anyone else knows)
+        const al=b.peek.alien, sc=floorScaleAt(h.y)*0.8, r=al.size*sc;
+        const save={x:al.x, y:al.y, scale:al.scale};
+        al.x=h.x; al.y=h.y + r*1.1 - p*r*1.2; al.scale=sc;   // eyes just over the rim
+        drawAlienList([al]);
+        al.x=save.x; al.y=save.y; al.scale=save.scale;
+      }
+    });
   } else {
     drawBarrel(a,i);
   }
@@ -3220,10 +3265,10 @@ audioToggle.addEventListener('click', ()=>{
 });
 document.getElementById('secretSpawnBtn').addEventListener('click', ()=>{
   // Debug spawn: straight into the off-screen gap (as if it had just walked off track 1), so it
-  // gets the checkpoint rolls and then walks in along the far track.
+  // gets the checkpoint rolls after a couple of seconds and then walks in along the far track.
   if(state.phase==='playing'){
     const a=createAlien();
-    a.state='settled'; a.walkPhase='gap'; a.waitTimer=ALIEN_TRACK_GAP_SECONDS;
+    a.state='settled'; a.walkPhase='gap'; a.waitTimer=2;  // short wait so it's quick to test with
     a.track=1; a.greeted=true; a.walksReverse=Math.random()<0.5;
     a.scale=a.targetScale=ALIEN_TRACK1_SCALE;
     a.x=a.baseX = a.walksReverse ? -ALIEN_TRACK_EDGE_MARGIN*3 : W + ALIEN_TRACK_EDGE_MARGIN*3;
