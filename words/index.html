@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Cargo Bay: Word Sort Protocol</title>
+</head>
+<body>
+<script>
+// Matching system: parts of speech. Each rock carries a word; barrels match on its word type.
+// The game itself is the shared engine (../engine/engine.js); see the interface notes there.
+// Words are picked to be (as near as possible) only one part of speech, so there's one right
+// answer: no "jump" (noun or verb), no "fast" (adjective or adverb), no "after" (preposition or
+// conjunction). Some verbs are past tense for the same reason.
+window.CARGO_MODE = (function(){
+  const choice=(arr)=>arr[Math.floor(Math.random()*arr.length)];
+
+  // tier 1 from the start, tier 2 joins in sector 3, tier 3 in sector 5
+  const TYPES = {
+    noun: {from:1, words:[
+      ['puppy','kitten','elephant','giraffe','banana','pancake','teacher','kitchen','mountain','library',
+       'dragon','planet','island','basket','window','river','castle','spaceship','dentist','pizza'],
+      ['museum','umbrella','astronaut','volcano','telescope','festival','orchestra','kindness','courage','friendship'],
+      ['happiness','honesty','freedom','knowledge','curiosity','adventure','patience','imagination'],
+    ]},
+    verb: {from:1, words:[
+      ['eat','sing','write','bring','give','think','grow','ran','ate','sang','threw','swam','laughed','climbed','shouted','carried'],
+      ['explored','discover','imagine','borrowed','arrive','decided','explain','celebrate','whispered','wandered'],
+      ['investigate','memorize','forgave','squeezed','hesitated','persuade','encourage','complained'],
+    ]},
+    adjective: {from:1, words:[
+      ['happy','tiny','fluffy','noisy','huge','shiny','sleepy','hungry','silly','delicious','friendly','gigantic','sticky','smelly','beautiful'],
+      ['enormous','curious','ancient','fragile','generous','nervous','invisible','gentle','clumsy','peaceful'],
+      ['mysterious','ridiculous','magnificent','terrible','courageous','grumpy','marvelous','enthusiastic'],
+    ]},
+    adverb: {from:1, words:[
+      ['quickly','slowly','loudly','quietly','happily','sadly','carefully','softly','never','always','often','suddenly','gently','very'],
+      ['eventually','rarely','nearly','cheerfully','finally','bravely','recently','almost','politely','already'],
+      ['seldom','perhaps','extremely','furiously','reluctantly','barely','abruptly'],
+    ]},
+    pronoun: {from:3, words:[
+      ['she','he','they','we','them','us','him','it','myself','yours'],
+      ['themselves','yourself','ours','theirs','everybody','nobody','someone'],
+      ['whoever','herself','itself','anyone','everyone'],
+    ]},
+    preposition: {from:3, words:[
+      ['under','between','into','onto','beside','with','from','of','at','toward'],
+      ['beneath','among','during','without','upon','against','beyond'],
+      ['despite','throughout','amid','amongst','unlike'],
+    ]},
+    conjunction: {from:5, words:[
+      ['and','but','or','because','if'],
+      ['although','unless','nor','whereas'],
+      ['whether','lest','whenever'],
+    ]},
+    interjection: {from:5, words:[
+      ['wow','oops','ouch','hooray','yikes','phew','hey','uh-oh','whoa','yay'],
+      ['eek','ahoy','aha','alas','hmm','yippee'],
+      ['gee','huzzah','ugh','golly'],
+    ]},
+  };
+  const tierFor = sector => sector>=5 ? 3 : sector>=3 ? 2 : 1;
+  const recent = [];   // don't repeat a word for a while
+
+  return {
+    id: 'words',
+    title: 'WORD SORT',
+    intro: "The rocks drifting past the cargo bay window are tagged with words today. Tractor-grab each one, read its word off the scanner, and drop it into the barrel for that kind of word — five of a kind seals the barrel.",
+    rules: {
+      READ:  "Each rock carries a word. Sort by word type: noun, verb, adjective, adverb — more types join in later sectors.",
+      SORT:  "The first word in an empty barrel decides its word type. The barrel shows that first word — remember what kind it was.",
+      MATCH: "A different word type in an armed barrel triggers a hull-damaging blowout.",
+    },
+    scanLabel: 'SPECIMEN TAG',
+    pickValue(sector){
+      const types = Object.keys(TYPES).filter(k=>sector>=TYPES[k].from);
+      const key = choice(types);
+      return {key};
+    },
+    makeItem(value, sector){
+      const tiers = TYPES[value.key].words.slice(0, tierFor(sector));
+      let pool = [].concat(...tiers).filter(w=>!recent.includes(w));
+      if(!pool.length) pool = [].concat(...tiers);
+      const text = choice(pool);
+      recent.push(text); if(recent.length>12) recent.shift();
+      return {rep:'word', text};
+    },
+    repLabel(){ return 'SORT BY: WORD TYPE'; },
+  };
+})();
+</script>
+<script>
+// Load the shared engine, passing on this page's ?v= cache-buster (see the engine's live update).
+(function(){ var v=/[?&]v=(\d+)/.exec(location.search);
+  document.write('<script data-cargo-engine src="../engine/engine.js'+(v?'?v='+v[1]:'')+'"><\/script>'); })();
+</script>
+</body>
+</html>
