@@ -2887,6 +2887,53 @@ function drawBarrelSlot(i){
 }
 // A barrel's label, projected as a hologram beside (or above) its slot. Shows how the barrel was
 // labelled by its first rock; what that means for matching is up to the player.
+// Each panel (frame, scanlines, glowing label) is rendered once into an offscreen canvas and reused
+// until its label, colour or size changes; blurred glow is costly to redraw every frame.
+const holoCache=[];
+let holoFontGen=0;
+if(document.fonts){
+  document.fonts.addEventListener && document.fonts.addEventListener('loadingdone', ()=>holoFontGen++);
+  document.fonts.ready.then(()=>holoFontGen++);
+}
+function holoPanel(i, b, g){
+  const sealed=!!b.sealed, label=b.value ? b.text : null, glyph=b.value ? b.glyph : null;
+  const key=[label, glyph&&JSON.stringify(glyph), sealed, g.w, g.h, DPR, holoFontGen].join('|');
+  const c=holoCache[i];
+  if(c && c.key===key) return c;
+  const PAD=12, w=g.w, h=g.h;
+  const cv=(c && c.cv) || document.createElement('canvas');
+  cv.width=Math.ceil((w+PAD*2)*DPR); cv.height=Math.ceil((h+PAD*2)*DPR);
+  const o=cv.getContext('2d');
+  o.setTransform(DPR,0,0,DPR,PAD*DPR,PAD*DPR);
+  const col = sealed ? '124,255,178' : '91,230,217';
+  o.fillStyle='rgba('+col+',0.09)'; o.fillRect(0,0,w,h);
+  o.fillStyle='rgba('+col+',0.07)';
+  for(let yy=1; yy<h; yy+=3) o.fillRect(0,yy,w,1);
+  o.strokeStyle='rgba('+col+',0.5)'; o.lineWidth=1;
+  o.strokeRect(0.5,0.5,w-1,h-1);
+  const k=Math.min(8,h*0.3);                                       // corner brackets
+  o.strokeStyle='rgba('+col+',0.95)'; o.lineWidth=1.6;
+  o.beginPath();
+  o.moveTo(0,k); o.lineTo(0,0); o.lineTo(k,0);
+  o.moveTo(w-k,0); o.lineTo(w,0); o.lineTo(w,k);
+  o.moveTo(w,h-k); o.lineTo(w,h); o.lineTo(w-k,h);
+  o.moveTo(k,h); o.lineTo(0,h); o.lineTo(0,h-k);
+  o.stroke();
+  o.shadowColor='rgb('+col+')'; o.shadowBlur=10;
+  const drawn = glyph && MODE.drawGlyph &&
+    MODE.drawGlyph(o, glyph, w/2, h/2, h*0.4, {fill:'rgb('+col+')', empty:'rgba('+col+',0.12)', line:'rgba('+col+',0.8)'});
+  if(!drawn){
+    const text = label || '— —';
+    o.textAlign='center'; o.textBaseline='middle';
+    o.font='700 100px Orbitron, sans-serif';
+    const w100=o.measureText(text).width||1;
+    const size=Math.max(8, Math.min(h*0.6, Math.floor(100*(w-12)/w100)));
+    o.font='700 '+size+'px Orbitron, sans-serif';
+    o.fillStyle = label ? (sealed ? '#c9ffe1' : '#d8fbf7') : 'rgba('+col+',0.45)';
+    o.fillText(text, w/2, h/2+size*0.04);
+  }
+  return holoCache[i]={key, cv, pad:PAD, col};
+}
 function drawHologram(i){
   const b=state.barrels[i], g=layout.holos[i], R=layout.barrelR;
   if(g.beside){
@@ -2898,57 +2945,25 @@ function drawHologram(i){
     ctx.beginPath(); ctx.ellipse(g.ex,g.ey,R*0.18,R*0.065,0,0,TAU); ctx.fill();
   }
   if(b.holo<=0.01) return;
+  const panel=holoPanel(i, b, g), col=panel.col;
   const t=state.t, open=smooth01(b.holo);
   let alpha = 0.86 + 0.08*Math.sin(t*11 + i*1.9);
   if(((t*0.9 + i*0.37) % 5) < 0.05) alpha*=0.45;                 // the odd glitch
-  const col = b.sealed ? '124,255,178' : '91,230,217';
   const w=g.w*(0.3+0.7*open), h=g.h*open, x0=g.x-w/2, y0=g.y-h/2;
   ctx.save();
   ctx.globalAlpha=alpha*b.holo;
-  // projection beam from the emitter up (or from the lid) to the panel's lower edge
-  const beamTop = g.beside ? y0+h : g.ey;
-  const beamBot = g.beside ? g.ey : y0+h;
+  // projection beam from the emitter (or the lid) to the panel's lower edge
   const bw = R*(g.beside?0.18:0.5);
-  const bg=ctx.createLinearGradient(0,beamTop,0,beamBot);
+  const bg=ctx.createLinearGradient(0, g.beside ? y0+h : g.ey, 0, g.beside ? g.ey : y0+h);
   bg.addColorStop(0, g.beside ? 'rgba('+col+',0.10)' : 'rgba('+col+',0.22)');
   bg.addColorStop(1, g.beside ? 'rgba('+col+',0.28)' : 'rgba('+col+',0.04)');
   ctx.fillStyle=bg;
   ctx.beginPath();
-  if(g.beside){ ctx.moveTo(g.ex-bw,beamBot); ctx.lineTo(g.ex+bw,beamBot); ctx.lineTo(x0+w,beamTop); ctx.lineTo(x0,beamTop); }
-  else { ctx.moveTo(g.ex-bw,g.ey); ctx.lineTo(g.ex+bw,g.ey); ctx.lineTo(x0+w,y0+h); ctx.lineTo(x0,y0+h); }
+  ctx.moveTo(g.ex-bw,g.ey); ctx.lineTo(g.ex+bw,g.ey); ctx.lineTo(x0+w,y0+h); ctx.lineTo(x0,y0+h);
   ctx.closePath(); ctx.fill();
-  // panel
-  ctx.fillStyle='rgba('+col+',0.09)';
-  ctx.fillRect(x0,y0,w,h);
-  ctx.fillStyle='rgba('+col+',0.07)';
-  for(let yy=y0+1; yy<y0+h; yy+=3) ctx.fillRect(x0,yy,w,1);
-  ctx.strokeStyle='rgba('+col+',0.5)'; ctx.lineWidth=1;
-  ctx.strokeRect(x0+0.5,y0+0.5,w-1,h-1);
-  const c=Math.min(8,h*0.3);                                       // corner brackets
-  ctx.strokeStyle='rgba('+col+',0.95)'; ctx.lineWidth=1.6;
-  ctx.beginPath();
-  ctx.moveTo(x0,y0+c); ctx.lineTo(x0,y0); ctx.lineTo(x0+c,y0);
-  ctx.moveTo(x0+w-c,y0); ctx.lineTo(x0+w,y0); ctx.lineTo(x0+w,y0+c);
-  ctx.moveTo(x0+w,y0+h-c); ctx.lineTo(x0+w,y0+h); ctx.lineTo(x0+w-c,y0+h);
-  ctx.moveTo(x0+c,y0+h); ctx.lineTo(x0,y0+h); ctx.lineTo(x0,y0+h-c);
-  ctx.stroke();
-  // content
-  if(open>0.6){
-    ctx.globalAlpha=alpha*b.holo*clamp((open-0.6)/0.4,0,1);
-    ctx.shadowColor='rgb('+col+')'; ctx.shadowBlur=10;
-    const drawn = b.value && b.glyph && MODE.drawGlyph &&
-      MODE.drawGlyph(ctx, b.glyph, g.x, g.y, h*0.4, {fill:'rgb('+col+')', empty:'rgba('+col+',0.12)', line:'rgba('+col+',0.8)'});
-    if(!drawn){
-      const label = b.value ? b.text : '— —';
-      ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.font='700 100px Orbitron, sans-serif';
-      const w100=ctx.measureText(label).width||1;
-      const size=Math.max(8, Math.min(h*0.6, Math.floor(100*(w-12)/w100)));
-      ctx.font='700 '+size+'px Orbitron, sans-serif';
-      ctx.fillStyle = b.value ? (b.sealed ? '#c9ffe1' : '#d8fbf7') : 'rgba('+col+',0.45)';
-      ctx.fillText(label, g.x, g.y+size*0.04);
-    }
-  }
+  // the cached panel, squashed while it unfolds
+  const sx=w/g.w, sy=h/g.h, P=panel.pad;
+  ctx.drawImage(panel.cv, x0-P*sx, y0-P*sy, (g.w+P*2)*sx, (g.h+P*2)*sy);
   ctx.restore();
 }
 // Draw something that passes down through a floor opening: visible above the hole's center line,
@@ -3181,10 +3196,12 @@ function drawBarrel(anchor,i,noShadow){
   ctx.beginPath(); ctx.ellipse(anchor.x,topY,R*0.84,ry*0.84,0,0,TAU); ctx.fill();
   if(b.value){
     ctx.save();
-    ctx.globalAlpha=0.35;
-    ctx.fillStyle = b.sealed ? '#7cffb2' : '#5be6d9';
-    ctx.shadowColor=ctx.fillStyle; ctx.shadowBlur=10;
-    ctx.beginPath(); ctx.ellipse(anchor.x,topY,R*0.3,ry*0.3,0,0,TAU); ctx.fill();
+    ctx.translate(anchor.x,topY); ctx.scale(1, ry/R);
+    const gl=ctx.createRadialGradient(0,0,0,0,0,R*0.6);
+    const c = b.sealed ? '124,255,178' : '91,230,217';
+    gl.addColorStop(0,'rgba('+c+',0.4)'); gl.addColorStop(0.5,'rgba('+c+',0.15)'); gl.addColorStop(1,'rgba('+c+',0)');
+    ctx.fillStyle=gl;
+    ctx.beginPath(); ctx.arc(0,0,R*0.6,0,TAU); ctx.fill();
     ctx.restore();
   }
 
