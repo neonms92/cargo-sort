@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Cargo Bay: Rhyme Sort Protocol</title>
+</head>
+<body>
+<script>
+// Matching system: rhymes. Each rock carries a word; barrels match on its rhyme family.
+// The game itself is the shared engine (../engine/engine.js); see the interface notes there.
+// Rhymes go by sound, not spelling. Early sectors keep to look-alike families (cat, hat, bat);
+// later ones mix in other spellings of the same sound (sun, one, done; blue, shoe, two). Families
+// are chosen so none rhymes with another, and words whose rhyme depends on accent are left out
+// (no "swap", "poor", "caught").
+window.CARGO_MODE = (function(){
+  const choice=(arr)=>arr[Math.floor(Math.random()*arr.length)];
+
+  // from: first sector the family appears. words: [sectors 1+, 3+, 5+]
+  const FAMILIES = {
+    at:   {from:1, words:[['cat','hat','bat','mat','rat','sat','flat'], ['chat','splat'], ['acrobat','doormat']]},
+    ig:   {from:1, words:[['pig','big','dig','wig','fig'], ['twig','jig'], []]},
+    op:   {from:1, words:[['hop','mop','top','pop','stop'], ['drop','shop','chop'], ['lollipop','raindrop']]},
+    un:   {from:1, words:[['sun','run','fun','bun'], ['one','won','done','son'], ['none','begun']]},
+    ake:  {from:1, words:[['cake','lake','bake','rake','snake'], ['shake','make','break','steak'], ['ache','cupcake','earthquake']]},
+    ing:  {from:1, words:[['ring','sing','king','wing'], ['swing','thing','spring','string'], []]},
+    ell:  {from:1, words:[['bell','shell','smell','well','yell'], ['spell','tell'], ['hotel','seashell']]},
+    ight: {from:1, words:[['night','light','right','fight','bright'], ['kite','bite','white','write'], ['height','polite','flight']]},
+    ug:   {from:1, words:[['bug','rug','hug','mug','jug'], ['slug','plug'], ['ladybug']]},
+    ock:  {from:1, words:[['sock','rock','clock','block','lock'], ['knock'], ['shamrock']]},
+    ee:   {from:3, words:[['bee','tree','see','three','free'], ['key','sea','me','we'], ['ski','chimpanzee','referee']]},
+    air:  {from:3, words:[['bear','chair','hair','pear'], ['stair','square','where','there'], ['wear','millionaire']]},
+    oo:   {from:3, words:[['blue','shoe','two','zoo','glue'], ['flew','new','chew'], ['through','canoe','kangaroo']]},
+    own:  {from:3, words:[['crown','clown','down','town'], ['frown','brown','gown'], ['noun']]},
+    ate:  {from:5, words:[['gate','plate','late','skate'], ['eight','weight','great','straight'], ['freight']]},
+    ore:  {from:5, words:[['door','four','floor','more'], ['roar','pour','store','snore'], ['dinosaur','explore']]},
+    oat:  {from:5, words:[['boat','coat','goat','note'], ['wrote','vote','throat'], ['remote']]},
+    ed:   {from:5, words:[['bed','red','head','bread'], ['said','fed','sled','shed'], ['instead','spread']]},
+  };
+  const tierFor = sector => sector>=5 ? 3 : sector>=3 ? 2 : 1;
+  const recent = [];   // don't repeat a word for a while
+
+  return {
+    id: 'rhymes',
+    title: 'RHYME SORT',
+    intro: "The rocks drifting past the cargo bay window are tagged with words today. Tractor-grab each one, read its word off the scanner, and drop it into the barrel it rhymes with — five of a kind seals the barrel.",
+    rules: {
+      READ:  "Each rock carries a word. Rhymes go by sound, not spelling: blue, shoe and two all rhyme.",
+      SORT:  "The first word in an empty barrel sets its rhyme. The barrel shows that word.",
+      MATCH: "A word that doesn't rhyme in an armed barrel triggers a hull-damaging blowout.",
+    },
+    scanLabel: 'SPECIMEN TAG',
+    pickValue(sector){
+      return {key: choice(Object.keys(FAMILIES).filter(k=>sector>=FAMILIES[k].from))};
+    },
+    makeItem(value, sector, labels){
+      const all = [].concat(...FAMILIES[value.key].words.slice(0, tierFor(sector)));
+      // a word never rhymes with itself, so skip the barrel labels; prefer words not seen lately
+      const fresh = all.filter(w=>!(labels||[]).includes(w));
+      let pool = fresh.filter(w=>!recent.includes(w));
+      if(!pool.length) pool = fresh.length ? fresh : all;
+      const text = choice(pool);
+      recent.push(text); if(recent.length>12) recent.shift();
+      return {rep:'word', text};
+    },
+    repLabel(){ return 'SORT BY: RHYME'; },
+  };
+})();
+</script>
+<script>
+// Load the shared engine, passing on this page's ?v= cache-buster (see the engine's live update).
+(function(){ var v=/[?&]v=(\d+)/.exec(location.search);
+  document.write('<script data-cargo-engine src="../engine/engine.js'+(v?'?v='+v[1]:'')+'"><\/script>'); })();
+</script>
+</body>
+</html>

@@ -9,7 +9,8 @@
 //   rules                 {READ, SORT, MATCH, EJECT, ...}: overrides/additions to the default rule lines
 //   scanLabel             caption over the scanner readout
 //   pickValue(sector)     a random value for this sector: any plain object with a `key`
-//   makeItem(value, sector)  how one rock shows that value: {rep, text, glyph?}
+//   makeItem(value, sector, labels)  how one rock shows that value: {rep, text, glyph?}
+//                         (labels: texts the barrels are showing right now)
 //   same(a, b)            optional; values match (default: same key)
 //   repLabel(item)        optional; line beside the readout while a rock is held
 //   readoutHTML(item)     optional; custom scanner markup (default: item.text)
@@ -220,6 +221,7 @@ const SITE_ROOT = ENGINE_SRC ? new URL('../', ENGINE_SRC).href : '';
 const MODES = [
   {id:'o2',    name:'OXYGEN',     path:''},
   {id:'words', name:'WORD TYPES', path:'words/'},
+  {id:'rhymes', name:'RHYMES',     path:'rhymes/'},
 ];
 // Snapshot of this page's own markup, taken before the engine touches the DOM; the live-update
 // check compares it (plus this file's text) against freshly fetched copies (see bottom of file).
@@ -485,7 +487,8 @@ const AudioEngine = (function(){
 // match on); an item is how one rock shows its value: {rep, text, glyph?}. `text` labels the scanner
 // and barrel holograms; `glyph` is optional mode-drawn art (the oxygen mode's pie charts).
 function sameValue(a,b){ return MODE.same ? MODE.same(a,b) : a.key===b.key; }
-function makeItem(value){ return MODE.makeItem(value, state.sector); }
+// `labels`: the barrels' current label texts, so a mode can avoid spawning a rock that just repeats one.
+function makeItem(value){ return MODE.makeItem(value, state.sector, state.barrels.map(b=>b.text).filter(Boolean)); }
 
 const canvas=document.getElementById('scene');
 const ctx=canvas.getContext('2d');
