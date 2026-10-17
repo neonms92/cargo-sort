@@ -52,6 +52,7 @@ html,body{
 #app{position:fixed; inset:0; width:100%; height:100%;}
 #stage{position:absolute; inset:0; width:100%; height:100%;}
 canvas{display:block; width:100%; height:100%; touch-action:none;}
+#stage canvas{position:absolute; left:0; top:0;}
 
 .panel{
   background:linear-gradient(160deg, var(--panel-2), var(--panel));
@@ -251,6 +252,7 @@ function injectShell(){
   document.body.insertAdjacentHTML('afterbegin', `
 <div id="app">
   <div id="stage">
+    <canvas id="bgScene"></canvas>
     <canvas id="scene"></canvas>
   </div>
 
@@ -491,7 +493,27 @@ function sameValue(a,b){ return MODE.same ? MODE.same(a,b) : a.key===b.key; }
 function makeItem(value){ return MODE.makeItem(value, state.sector, state.barrels.map(b=>b.text).filter(Boolean)); }
 
 const canvas=document.getElementById('scene');
-const ctx=canvas.getContext('2d');
+const bgCanvas=document.getElementById('bgScene');
+let ctx=canvas.getContext('2d');   // `let`: paintLayer() points it at an offscreen canvas while caching
+// ---------- Cached layers ----------
+// Things that rarely change (walls, floor, nebula, iris blades, floor openings, barrel bodies) are
+// drawn once into an offscreen canvas and then blitted each frame. A layer is redrawn only when its
+// key changes. `fn` draws in normal screen coordinates into the region (x, y, w, h); because what's
+// cached is just that patch, the same layer can be blitted somewhere else (all barrels share one body).
+let layoutGen=0;
+function makeLayer(){ return {cv:document.createElement('canvas'), key:null}; }
+function paintLayer(L, key, x, y, w, h, fn, dx, dy){
+  w=Math.ceil(w); h=Math.ceil(h);
+  if(L.key!==key){
+    L.cv.width=Math.max(1,Math.ceil(w*DPR)); L.cv.height=Math.max(1,Math.ceil(h*DPR));
+    const o=L.cv.getContext('2d');
+    o.setTransform(DPR,0,0,DPR,-x*DPR,-y*DPR);
+    const main=ctx; ctx=o;
+    try{ fn(); } finally { ctx=main; }
+    L.key=key;
+  }
+  ctx.drawImage(L.cv, dx===undefined?x:dx, dy===undefined?y:dy, w, h);
+}
 let W=0,H=0,DPR=1;
 function resize(){
   DPR = Math.min(window.devicePixelRatio||1, 2);
@@ -500,11 +522,19 @@ function resize(){
   canvas.style.width=W+'px'; canvas.style.height=H+'px';
   ctx.setTransform(DPR,0,0,DPR,0,0);
   computeLayout();
+  // Walls and floor never change between resizes: they live on a canvas of their own behind the
+  // scene, painted here once, so they cost nothing per frame.
+  bgCanvas.width = W*DPR; bgCanvas.height=H*DPR;
+  bgCanvas.style.width=W+'px'; bgCanvas.style.height=H+'px';
+  const main=ctx; ctx=bgCanvas.getContext('2d');
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  try{ drawBayStructure(); drawFloor(); } finally { ctx=main; }
 }
 window.addEventListener('resize', resize);
 
 let layout={};
 function computeLayout(){
+  layoutGen++;
   const cx=W*0.5, cy=H*0.34;
   const irisR = Math.min(W,H)*0.225;
   layout.iris = {cx,cy,r:irisR};
@@ -2584,15 +2614,19 @@ function drawAlienBubbles(){
 function draw(){
   ctx.clearRect(0,0,W,H);
   ctx.save();
-  const sh = state.shake;
+  // Screen shake moves the whole stage (both canvases) rather than redrawing it offset.
+  const sh = state.shake, stage=canvas.parentNode;
   if(sh>0.1){
-    ctx.translate((Math.random()-0.5)*sh, (Math.random()-0.5)*sh);
-  }
+    stage.style.transform='translate('+((Math.random()-0.5)*sh).toFixed(1)+'px,'+((Math.random()-0.5)*sh).toFixed(1)+'px)';
+    stage.dataset.shaking='1';
+  } else if(stage.dataset.shaking){ stage.style.transform=''; delete stage.dataset.shaking; }
 
-  drawVoidBackdrop();
-  drawBayStructure();
+  // Walls and floor are on the background canvas (see resize). The floor used to be painted over the
+  // bottom of the iris; now the iris is clipped at the floor line instead.
+  ctx.save();
+  ctx.beginPath(); ctx.rect(-W, -H, W*3, layout.floorTop+H); ctx.clip();
   drawIrisWindow();
-  drawFloor();
+  ctx.restore();
   drawEmitters();
   drawRedButton();
   drawLever();
@@ -2607,6 +2641,9 @@ function draw(){
   ctx.restore();
 }
 
+const layerSky=makeLayer(), layerIris=makeLayer(), layerBarrel=makeLayer();
+const holeLayers=new WeakMap();
+let nebulaGen=0;
 function drawVoidBackdrop(){
   const g=ctx.createLinearGradient(0,0,0,H);
   g.addColorStop(0,'#0a0e16');
@@ -2619,19 +2656,23 @@ function drawIrisWindow(){
   const {cx,cy,r}=layout.iris;
   ctx.save();
   ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU); ctx.clip();
-  const sg=ctx.createRadialGradient(cx,cy,0,cx,cy,r*1.4);
-  sg.addColorStop(0,`hsl(${state.nebulaHue},45%,10%)`);
-  sg.addColorStop(1,'#020305');
-  ctx.fillStyle=sg;
-  ctx.fillRect(cx-r,cy-r,r*2,r*2);
-  state.nebulaBlobs.forEach(b=>{
-    const bx=cx+Math.cos(b.a)*r*b.r, by=cy+Math.sin(b.a)*r*b.r;
-    const rad=r*b.size;
-    const ng=ctx.createRadialGradient(bx,by,0,bx,by,rad);
-    ng.addColorStop(0, `hsla(${b.hue},70%,60%,${b.alpha})`);
-    ng.addColorStop(1, `hsla(${b.hue},70%,50%,0)`);
-    ctx.fillStyle=ng;
-    ctx.beginPath(); ctx.arc(bx,by,rad,0,TAU); ctx.fill();
+  const blobs=state.nebulaBlobs;
+  if(!blobs.gen) blobs.gen=++nebulaGen;
+  paintLayer(layerSky, layoutGen+'|'+DPR+'|'+blobs.gen+'|'+state.nebulaHue, cx-r, cy-r, r*2, r*2, ()=>{
+    const sg=ctx.createRadialGradient(cx,cy,0,cx,cy,r*1.4);
+    sg.addColorStop(0,`hsl(${state.nebulaHue},45%,10%)`);
+    sg.addColorStop(1,'#020305');
+    ctx.fillStyle=sg;
+    ctx.fillRect(cx-r,cy-r,r*2,r*2);
+    blobs.forEach(b=>{
+      const bx=cx+Math.cos(b.a)*r*b.r, by=cy+Math.sin(b.a)*r*b.r;
+      const rad=r*b.size;
+      const ng=ctx.createRadialGradient(bx,by,0,bx,by,rad);
+      ng.addColorStop(0, `hsla(${b.hue},70%,60%,${b.alpha})`);
+      ng.addColorStop(1, `hsla(${b.hue},70%,50%,0)`);
+      ctx.fillStyle=ng;
+      ctx.beginPath(); ctx.arc(bx,by,rad,0,TAU); ctx.fill();
+    });
   });
   state.stars.forEach(s=>{
     const sx=cx+Math.cos(s.a)*r*s.r, sy=cy+Math.sin(s.a)*r*s.r;
@@ -2647,24 +2688,28 @@ function drawIrisWindow(){
 
   ctx.restore();
 
-  drawIrisBlades(cx,cy,r);
+  // blades + ring + rivets: one layer, redrawn only while the iris is moving
+  const RR=r*1.17+4;
+  paintLayer(layerIris, layoutGen+'|'+DPR+'|'+state.irisOpen.toFixed(3), cx-RR, cy-RR, RR*2, RR*2, ()=>{
+    drawIrisBlades(cx,cy,r);
 
-  const ringW = r*0.14;
-  const rg=ctx.createLinearGradient(cx-r,cy-r,cx+r,cy+r);
-  rg.addColorStop(0,'#4a5568'); rg.addColorStop(0.5,'#232a35'); rg.addColorStop(1,'#3a4553');
-  ctx.strokeStyle=rg;
-  ctx.lineWidth=ringW;
-  ctx.beginPath(); ctx.arc(cx,cy,r+ringW*0.42,0,TAU); ctx.stroke();
-  ctx.strokeStyle='rgba(91,230,217,0.35)';
-  ctx.lineWidth=2;
-  ctx.beginPath(); ctx.arc(cx,cy,r+ringW*0.05,0,TAU); ctx.stroke();
-  const rivetN=20;
-  for(let i=0;i<rivetN;i++){
-    const a=(i/rivetN)*TAU;
-    const rx=cx+Math.cos(a)*(r+ringW*0.8), ry=cy+Math.sin(a)*(r+ringW*0.8);
-    ctx.fillStyle='#151b23';
-    ctx.beginPath(); ctx.arc(rx,ry,2.4,0,TAU); ctx.fill();
-  }
+    const ringW = r*0.14;
+    const rg=ctx.createLinearGradient(cx-r,cy-r,cx+r,cy+r);
+    rg.addColorStop(0,'#4a5568'); rg.addColorStop(0.5,'#232a35'); rg.addColorStop(1,'#3a4553');
+    ctx.strokeStyle=rg;
+    ctx.lineWidth=ringW;
+    ctx.beginPath(); ctx.arc(cx,cy,r+ringW*0.42,0,TAU); ctx.stroke();
+    ctx.strokeStyle='rgba(91,230,217,0.35)';
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(cx,cy,r+ringW*0.05,0,TAU); ctx.stroke();
+    const rivetN=20;
+    for(let i=0;i<rivetN;i++){
+      const a=(i/rivetN)*TAU;
+      const rx=cx+Math.cos(a)*(r+ringW*0.8), ry=cy+Math.sin(a)*(r+ringW*0.8);
+      ctx.fillStyle='#151b23';
+      ctx.beginPath(); ctx.arc(rx,ry,2.4,0,TAU); ctx.fill();
+    }
+  });
 }
 
 function drawIrisBlades(cx,cy,r){
@@ -3000,6 +3045,11 @@ function withEmergedClip(h, open, c, d, fn){
 }
 // A circular opening in the floor with two doors that meet at a vertical seam.
 function drawFloorHole(h, open){
+  let L=holeLayers.get(h); if(!L){ L=makeLayer(); holeLayers.set(h,L); }
+  const bx=h.rx*1.14+3, by=h.ry*1.2+3;
+  paintLayer(L, layoutGen+'|'+DPR+'|'+open.toFixed(3), h.x-bx, h.y-by, bx*2, by*2, ()=>drawFloorHoleRaw(h, open));
+}
+function drawFloorHoleRaw(h, open){
   ctx.save();
   ctx.fillStyle='#07090d';
   ctx.beginPath(); ctx.ellipse(h.x,h.y,h.rx*1.14,h.ry*1.2,0,0,TAU); ctx.fill();
@@ -3111,62 +3161,66 @@ function drawBarrel(anchor,i,noShadow){
     ctx.beginPath(); ctx.ellipse(anchor.x,bottomY,R*1.02, ry*0.95,0,0,TAU); ctx.fill();
   }
 
-  // Cylinder body: straight sides, rounded (lower half-ellipse) bottom, shaded like a curved surface.
-  const x=anchor.x;
-  const bodyPath=()=>{
-    ctx.beginPath();
-    ctx.moveTo(x-R, topY);
-    ctx.lineTo(x-R, bottomY);
-    ctx.ellipse(x, bottomY, R, ry, 0, Math.PI, 0, true);
-    ctx.lineTo(x+R, topY);
-    ctx.closePath();
-  };
-  const bodyGrad=ctx.createLinearGradient(x-R,0,x+R,0);
-  bodyGrad.addColorStop(0,'#14181f');
-  bodyGrad.addColorStop(0.18,'#2a323e');
-  bodyGrad.addColorStop(0.36,'#46505f');
-  bodyGrad.addColorStop(0.5,'#38414f');
-  bodyGrad.addColorStop(0.8,'#232a35');
-  bodyGrad.addColorStop(1,'#101318');
-  ctx.fillStyle=bodyGrad;
-  bodyPath(); ctx.fill();
-  // Hoops: raised rings that wrap around the barrel, so they curve with the bottom edge.
-  ctx.save();
-  bodyPath(); ctx.clip();
-  [0.2,0.5,0.82].forEach((t,k)=>{
-    const yy=lerp(topY,bottomY,t);
-    const major = k!==1;
-    ctx.strokeStyle='rgba(0,0,0,0.45)'; ctx.lineWidth=major?6:3;
-    ctx.beginPath(); ctx.ellipse(x,yy+1,R,ry,0,0,Math.PI); ctx.stroke();
-    const hg=ctx.createLinearGradient(x-R,0,x+R,0);
-    hg.addColorStop(0,'rgba(180,195,215,0.04)');
-    hg.addColorStop(0.35,'rgba(200,215,235,'+(major?0.38:0.18)+')');
-    hg.addColorStop(1,'rgba(180,195,215,0.03)');
-    ctx.strokeStyle=hg; ctx.lineWidth=major?2:1;
-    ctx.beginPath(); ctx.ellipse(x,yy-1.5,R,ry,0,0,Math.PI); ctx.stroke();
-  });
-  // soft specular streak down the lit side
-  const spec=ctx.createLinearGradient(x-R*0.55,0,x-R*0.15,0);
-  spec.addColorStop(0,'rgba(255,255,255,0)');
-  spec.addColorStop(0.5,'rgba(255,255,255,0.07)');
-  spec.addColorStop(1,'rgba(255,255,255,0)');
-  ctx.fillStyle=spec; ctx.fillRect(x-R*0.55, topY, R*0.4, Hh+ry);
-  ctx.restore();
-  // shipping label in the lower corner
-  drawShippingLabel(x + R*0.64, bottomY - R*0.36, R*0.44, R*0.3, -0.04);
-  // outline: sides plus the curved bottom rim
-  ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1.5;
-  bodyPath(); ctx.stroke();
-  ctx.strokeStyle='rgba(150,165,185,0.22)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.ellipse(x, bottomY-2, R-1, ry, 0, Math.PI*0.15, Math.PI*0.85); ctx.stroke();
-
   const gw=R*0.62;
   const gTop=topY+R*0.62, gBot=bottomY-R*0.28;
   const gx0=anchor.x-gw/2, gh=gBot-gTop;
-  ctx.fillStyle='#0a0d12';
-  roundRectPath(gx0-3, gTop-3, gw+6, gh+6, 5); ctx.fill();
-  ctx.strokeStyle='rgba(255,255,255,0.08)'; ctx.lineWidth=1;
-  roundRectPath(gx0-3, gTop-3, gw+6, gh+6, 5); ctx.stroke();
+  // Everything up to the gauge's contents is the same for every barrel: cached once, blitted here.
+  const bx0=anchor.x-R-4, by0=topY-ry-4;
+  paintLayer(layerBarrel, layoutGen+'|'+DPR, bx0, by0, R*2+8, Hh+ry*2+8, ()=>{
+    // Cylinder body: straight sides, rounded (lower half-ellipse) bottom, shaded like a curved surface.
+    const x=anchor.x;
+    const bodyPath=()=>{
+      ctx.beginPath();
+      ctx.moveTo(x-R, topY);
+      ctx.lineTo(x-R, bottomY);
+      ctx.ellipse(x, bottomY, R, ry, 0, Math.PI, 0, true);
+      ctx.lineTo(x+R, topY);
+      ctx.closePath();
+    };
+    const bodyGrad=ctx.createLinearGradient(x-R,0,x+R,0);
+    bodyGrad.addColorStop(0,'#14181f');
+    bodyGrad.addColorStop(0.18,'#2a323e');
+    bodyGrad.addColorStop(0.36,'#46505f');
+    bodyGrad.addColorStop(0.5,'#38414f');
+    bodyGrad.addColorStop(0.8,'#232a35');
+    bodyGrad.addColorStop(1,'#101318');
+    ctx.fillStyle=bodyGrad;
+    bodyPath(); ctx.fill();
+    // Hoops: raised rings that wrap around the barrel, so they curve with the bottom edge.
+    ctx.save();
+    bodyPath(); ctx.clip();
+    [0.2,0.5,0.82].forEach((t,k)=>{
+      const yy=lerp(topY,bottomY,t);
+      const major = k!==1;
+      ctx.strokeStyle='rgba(0,0,0,0.45)'; ctx.lineWidth=major?6:3;
+      ctx.beginPath(); ctx.ellipse(x,yy+1,R,ry,0,0,Math.PI); ctx.stroke();
+      const hg=ctx.createLinearGradient(x-R,0,x+R,0);
+      hg.addColorStop(0,'rgba(180,195,215,0.04)');
+      hg.addColorStop(0.35,'rgba(200,215,235,'+(major?0.38:0.18)+')');
+      hg.addColorStop(1,'rgba(180,195,215,0.03)');
+      ctx.strokeStyle=hg; ctx.lineWidth=major?2:1;
+      ctx.beginPath(); ctx.ellipse(x,yy-1.5,R,ry,0,0,Math.PI); ctx.stroke();
+    });
+    // soft specular streak down the lit side
+    const spec=ctx.createLinearGradient(x-R*0.55,0,x-R*0.15,0);
+    spec.addColorStop(0,'rgba(255,255,255,0)');
+    spec.addColorStop(0.5,'rgba(255,255,255,0.07)');
+    spec.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=spec; ctx.fillRect(x-R*0.55, topY, R*0.4, Hh+ry);
+    ctx.restore();
+    // shipping label in the lower corner
+    drawShippingLabel(x + R*0.64, bottomY - R*0.36, R*0.44, R*0.3, -0.04);
+    // outline: sides plus the curved bottom rim
+    ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1.5;
+    bodyPath(); ctx.stroke();
+    ctx.strokeStyle='rgba(150,165,185,0.22)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.ellipse(x, bottomY-2, R-1, ry, 0, Math.PI*0.15, Math.PI*0.85); ctx.stroke();
+
+    ctx.fillStyle='#0a0d12';
+    roundRectPath(gx0-3, gTop-3, gw+6, gh+6, 5); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.08)'; ctx.lineWidth=1;
+    roundRectPath(gx0-3, gTop-3, gw+6, gh+6, 5); ctx.stroke();
+  }, bx0, by0);
 
   const fillT=clamp(b.fillDisplay,0,1);
   if(fillT>0){
@@ -3206,12 +3260,13 @@ function drawBarrel(anchor,i,noShadow){
   }
 
   const flashBoost = b.flashT>0 ? (b.flashT/0.3) : 0;
+  // rim glow: soft wide strokes under the rim (cheaper than a blur shadow)
+  const glow=4+flashBoost*14+(b.sealed?6:0);
+  ctx.beginPath(); ctx.ellipse(anchor.x,topY,R,ry,0,0,TAU);
   ctx.strokeStyle=rimColor;
-  ctx.lineWidth=2.5+flashBoost*4;
-  ctx.shadowColor=rimColor;
-  ctx.shadowBlur=6+flashBoost*22+(b.sealed?10:0);
-  ctx.beginPath(); ctx.ellipse(anchor.x,topY,R,ry,0,0,TAU); ctx.stroke();
-  ctx.shadowBlur=0;
+  ctx.globalAlpha=0.12; ctx.lineWidth=2.5+glow*1.6; ctx.stroke();
+  ctx.globalAlpha=0.25; ctx.lineWidth=2.5+glow*0.7; ctx.stroke();
+  ctx.globalAlpha=1;    ctx.lineWidth=2.5+flashBoost*4; ctx.stroke();
 
   ctx.restore();
 }
@@ -3220,15 +3275,14 @@ function drawBeams(){
   const r=state.held;
   layout.emitters.forEach((e,idx)=>{
     ctx.save();
-    ctx.strokeStyle='rgba(91,230,217,0.85)';
-    ctx.lineWidth=1;
-    ctx.shadowColor='#5be6d9';
-    ctx.shadowBlur=8;
+    // glow as two soft wide strokes under the core line (a blur shadow costs far more)
     ctx.beginPath();
     ctx.moveTo(e.x,e.y);
     ctx.lineTo(r.x,r.y);
-    ctx.stroke();
-    ctx.shadowBlur=0;
+    ctx.lineCap='round';
+    ctx.strokeStyle='rgba(91,230,217,0.07)'; ctx.lineWidth=9; ctx.stroke();
+    ctx.strokeStyle='rgba(91,230,217,0.16)'; ctx.lineWidth=4; ctx.stroke();
+    ctx.strokeStyle='rgba(91,230,217,0.85)'; ctx.lineWidth=1; ctx.stroke();
     const speed=2.4;
     const tt=(state.t*speed+idx*0.27)%1;
     const px=lerp(e.x,r.x,tt), py=lerp(e.y,r.y,tt);
