@@ -625,26 +625,34 @@ function computeLayout(){
   }
   layout.armSeg = maxReach*0.58;
 
-  // Airlock chute: a glass box set into the left wall, between the HUD and the walkway, with its
-  // LAUNCH button under it (or beside it where the wall is too short, e.g. landscape phones).
-  const hud = document.getElementById('hullPanel');
-  const roomTop = (hud ? hud.getBoundingClientRect().bottom : 70) + 12;
-  const rb = layout.redButton;
-  const roomBottom = Math.min(layout.floorTop - 30, rb.y - rb.r*1.6 - 8);
-  const roomL = 10, roomR = cx - irisR*1.2 - 10;
-  const roomW = roomR-roomL, roomH = roomBottom-roomTop;
-  const BOX_MAX = 104, ASPECT = 1.2, BTN_H = 30, BTN_SIDE_W = 60, GAP = 8;
-  const wBelow = Math.min(roomW, BOX_MAX, (roomH - BTN_H - GAP)/ASPECT);
-  const wSide = Math.min(roomW - BTN_SIDE_W - GAP, BOX_MAX, roomH/ASPECT);
-  const side = wSide > wBelow*1.15;
-  const bw = Math.max(40, side ? wSide : wBelow), bh = bw*ASPECT;
-  const groupW = side ? bw + GAP + BTN_SIDE_W : bw;
-  const gx = (roomL+roomR)/2 - groupW/2;
-  const boxX = gx + bw/2, boxY = roomBottom - (side ? 0 : BTN_H + GAP) - bh/2;
+  // Airlock chute: a glass box set into the left wall right beside the iris, with its LAUNCH button
+  // mounted above it. It fills the wall between whatever is above it (the hull HUD, a beam emitter) and whatever
+  // stands in front of it (the red button, and on short landscape screens the back-left barrel and
+  // its hologram), so the room it gets depends on its own width: settle that in a few passes.
+  const hudR = (()=>{ const el=document.getElementById('hullPanel'); return el ? el.getBoundingClientRect() : null; })();
+  const rb = layout.redButton, b0 = layout.barrels4[0], h0 = layout.holos[0];
+  const R0 = layout.barrelR;
+  const below = [
+    {l:rb.x-rb.r*1.6, r:rb.x+rb.r*1.6, top:rb.y-rb.r*1.6},
+    {l:b0.x-R0*1.1, r:b0.x+R0*1.1, top:b0.y-layout.barrelH-R0*0.45},
+    {l:h0.x-h0.w/2, r:h0.x+h0.w/2, top:h0.y-h0.h/2},
+  ];
+  const roomR = cx - irisR*1.2 - 10, BOX_MAX = 104, ASPECT = 1.2, BTN_H = 30, GAP = 10;
+  const frameOf = w => Math.max(5, w*0.07);   // drawChute's frame width
+  let bw = BOX_MAX, roomBottom = 0;
+  for(let pass=0; pass<4; pass++){
+    const l = roomR - frameOf(bw)*2 - bw;
+    const e0 = layout.emitters[0];
+    let roomTop = (hudR && hudR.right + 8 > l ? hudR.bottom : 0) + 14;
+    if(e0.x + 15 > l) roomTop = Math.max(roomTop, e0.y + 15 + 6);
+    roomBottom = layout.floorTop - 30;
+    below.forEach(o=>{ if(o.r > l && o.l < roomR) roomBottom = Math.min(roomBottom, o.top - 8); });
+    bw = Math.max(40, Math.min(roomR-10, BOX_MAX, (roomBottom-roomTop - BTN_H - GAP - frameOf(bw))/ASPECT - frameOf(bw)));
+  }
+  const bh = bw*ASPECT, frame = frameOf(bw);
+  const boxX = roomR - frame - bw/2, boxY = roomBottom - frame - bh/2;
   layout.chute = {x:boxX, y:boxY, w:bw, h:bh};
-  layout.chuteBtn = side
-    ? {x:gx + bw + GAP + BTN_SIDE_W/2, y:boxY + bh/2 - BTN_H/2, w:BTN_SIDE_W, h:BTN_H}
-    : {x:boxX, y:roomBottom - BTN_H/2, w:bw, h:BTN_H};
+  layout.chuteBtn = {x:boxX, y:boxY - bh/2 - frame - GAP - BTN_H/2, w:bw, h:BTN_H};
 }
 // Where the wrist sits when the pincers are clamped on the lid of a barrel standing at `anchor`.
 function armGrabWrist(anchor){
@@ -3262,7 +3270,7 @@ function drawForceField(){
 // port that irises open onto space when the chute launches. The occupant is drawn between the two.
 function drawChute(){
   const c=layout.chute, ch=state.chute, occ=chuteOccupant();
-  const x0=c.x-c.w/2, y0=c.y-c.h/2, F=Math.max(5, c.w*0.07);
+  const x0=c.x-c.w/2, y0=c.y-c.h/2, F=Math.max(5, c.w*0.07);   // frame width (computeLayout assumes the same)
   ctx.save();
   // wall frame
   ctx.fillStyle='#1b212b';
