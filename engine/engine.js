@@ -560,7 +560,6 @@ function computeLayout(){
     {x:W*0.05, y:layout.floorTop-10},
     {x:W*0.95, y:layout.floorTop-10},
   ];
-  layout.frontBounds = {x0:W*0.08,x1:W*0.92,y0:layout.iris.cy-irisR*0.3,y1:layout.floorBottom-6};
   layout.toolbarTop = H-108;
   // Both sit on the far walkway (track 2): their bottoms rest on it, not their centers.
   // Button housing radius is r*1.6; the lever's mounting plate is 24 tall (±12 around the pivot).
@@ -627,6 +626,7 @@ const state={
   held:null,
   pointer:{x:0,y:0,active:false},
   dragLast:{x:0,y:0},
+  dragSamples:[],
   shake:0,
   warnT:0,
   irisOpen:1, irisTarget:1,
@@ -1226,7 +1226,7 @@ function localPos(e){
   return {x:cx,y:cy};
 }
 function hitRock(pos){
-  const candidates = state.rocks.filter(r=> (r.state==='floating' && state.irisOpen>0.5) || r.state==='settled');
+  const candidates = state.rocks.filter(r=> (r.state==='floating' && state.irisOpen>0.5) || r.state==='settled' || r.state==='falling');
   candidates.sort((a,b)=> b.scale - a.scale);
   for(const r of candidates){
     const d=Math.hypot(pos.x-r.x, pos.y-r.y);
@@ -1236,7 +1236,9 @@ function hitRock(pos){
   return null;
 }
 function hitAlien(pos){
-  const candidates = state.aliens.filter(a=> (a.state==='floating' && state.irisOpen>0.5) || a.state==='settled');
+  // Thrown aliens can be caught mid-air, but not ones on a scripted fall (booted by the arm, shaken off the ring).
+  const candidates = state.aliens.filter(a=> (a.state==='floating' && state.irisOpen>0.5) || a.state==='settled' ||
+    (a.state==='falling' && !a.kicked && !a.fallToTrack2));
   candidates.sort((a,b)=> b.scale - a.scale);
   for(const a of candidates){
     const d=Math.hypot(pos.x-a.x, pos.y-a.y);
@@ -1264,6 +1266,7 @@ function onDown(e){
     state.held=r;
     r.state='held';
     state.dragLast={x:pos.x,y:pos.y};
+    state.dragSamples=[]; recordDragSample(pos);
     AudioEngine.beamStart();
     canvas.setPointerCapture && e.pointerId!==undefined && canvas.setPointerCapture(e.pointerId);
     state.pointer.x=pos.x; state.pointer.y=pos.y; state.pointer.active=true;
@@ -1276,6 +1279,7 @@ function onDown(e){
     state.held=a;
     a.state='held';
     state.dragLast={x:pos.x,y:pos.y};
+    state.dragSamples=[]; recordDragSample(pos);
     AudioEngine.beamStart();
     canvas.setPointerCapture && e.pointerId!==undefined && canvas.setPointerCapture(e.pointerId);
     state.pointer.x=pos.x; state.pointer.y=pos.y; state.pointer.active=true;
@@ -1321,6 +1325,7 @@ function onMove(e){
     const r=state.held;
     r.vel = {x:pos.x-state.dragLast.x, y:pos.y-state.dragLast.y};
     state.dragLast={x:pos.x,y:pos.y};
+    recordDragSample(pos);
     r.x = pos.x; r.y = pos.y;
     const top = layout.iris.cy - layout.iris.r*0.2;
     const bottom = layout.floorBottom;
@@ -1338,6 +1343,82 @@ function onUp(e){
 canvas.addEventListener('pointerdown', onDown);
 window.addEventListener('pointermove', onMove, {passive:false});
 window.addEventListener('pointerup', onUp);
+
+// ---- Throw physics ----
+// Whatever the beam lets go of keeps the pointer's velocity and flies under gravity: it bounces
+// on the near floor, skids to a stop, and anything that sails past a side edge has left the bay
+// (a rock is unloaded, an alien starts its off-screen gap).
+const THROW_SAMPLE_MS = 90;      // pointer history used to measure the throw
+const THROW_STALE_MS = 100;      // pointer still for longer than this before letting go = a drop, not a throw
+const THROW_MAX_SPEED = 1400;    // px/s
+const FALL_GRAVITY = 420;        // px/s²
+const BOUNCE_RESTITUTION = 0.35; // share of vertical speed kept on each bounce
+const BOUNCE_MIN_VY = 110;       // hitting the floor slower than this stops the bouncing
+const BOUNCE_KEEP_VX = 0.8;      // share of sideways speed kept on each bounce
+const FLOOR_FRICTION = 900;      // px/s² of sideways slowdown while skidding on the floor
+const SETTLE_SPEED = 15;         // px/s; slower than this on the floor counts as at rest
+function recordDragSample(pos){
+  const now=performance.now();
+  state.dragSamples.push({x:pos.x, y:pos.y, t:now});
+  while(state.dragSamples.length>2 && now-state.dragSamples[0].t > THROW_SAMPLE_MS*2) state.dragSamples.shift();
+}
+// Pointer velocity (px/s) over the last moment of the drag. A pointer that stopped before letting
+// go has no recent samples, so it drops the object instead of throwing it.
+function throwVelocity(){
+  const now=performance.now(), s=state.dragSamples;
+  state.dragSamples=[];
+  if(s.length<2) return {x:0,y:0};
+  const b=s[s.length-1];
+  if(now-b.t > THROW_STALE_MS) return {x:0,y:0};
+  // Earliest sample within the window, but always at least the one before the last (slow devices
+  // can space pointer events further apart than the window).
+  let i=s.length-2;
+  while(i>0 && b.t-s[i-1].t <= THROW_SAMPLE_MS) i--;
+  const a=s[i], dt=(b.t-a.t)/1000;
+  if(dt<0.008) return {x:0,y:0};
+  let vx=(b.x-a.x)/dt, vy=(b.y-a.y)/dt;
+  const sp=Math.hypot(vx,vy);
+  if(sp>THROW_MAX_SPEED){ vx*=THROW_MAX_SPEED/sp; vy*=THROW_MAX_SPEED/sp; }
+  return {x:vx, y:vy};
+}
+// One frame of free flight for a falling rock or alien. Returns -1 / 1 once it has gone past the
+// left / right edge of the screen, 'rest' once it has come to rest on the floor, otherwise null.
+function stepFallingBody(b, dt){
+  b.fvx = b.fvx||0;
+  b.fvy = (b.fvy||0) + FALL_GRAVITY*dt;
+  b.x += b.fvx*dt;
+  b.y += b.fvy*dt;
+  const pTop = layout.iris.cy - layout.iris.r*0.2;
+  const pBottom = layout.floorBottom;
+  b.scale = lerp(0.62, 1.7, clamp((b.y-pTop)/(pBottom-pTop), 0, 1));
+  const floorY = layout.floorBottom - b.size*0.4;
+  let onFloor = false;
+  if(b.y>=floorY){
+    b.y = floorY;
+    if(b.fvy > BOUNCE_MIN_VY){
+      b.fvy = -b.fvy*BOUNCE_RESTITUTION;
+      b.fvx *= BOUNCE_KEEP_VX;
+    } else {
+      onFloor = true;
+      b.fvy = 0;
+      const dv = FLOOR_FRICTION*dt;
+      b.fvx = Math.abs(b.fvx)<=dv ? 0 : b.fvx - Math.sign(b.fvx)*dv;
+    }
+  }
+  const rad = b.size*b.scale;
+  if(b.x + rad < 0) return -1;
+  if(b.x - rad > W) return 1;
+  if(onFloor && Math.abs(b.fvx) < SETTLE_SPEED){ b.fvx = 0; return 'rest'; }
+  return null;
+}
+// A falling alien that left the bay over a side edge: straight into the off-screen gap, and its
+// next pass comes in from the side it left by (like an alien booted out by the robot arm).
+function alienFellOffEdge(a, side){
+  a.walksReverse = side<0;
+  a.fixitMode = false;
+  a.tumbled = false;
+  sendAlienOffscreen(a);
+}
 
 function releaseRock(r){
   const iris=layout.iris;
@@ -1359,8 +1440,9 @@ function releaseRock(r){
       return;
     }
   }
+  const v = throwVelocity();
   r.state='falling';
-  r.fvy = r.vel? r.vel.y*4 : 0;
+  r.fvx = v.x; r.fvy = v.y;
 }
 function releaseAlien(a){
   a.walksReverse = Math.random()<0.5;
@@ -1379,8 +1461,9 @@ function releaseAlien(a){
     AudioEngine.eject();
     return;
   }
+  const v = throwVelocity();
   a.state='falling';
-  a.fvy = a.vel? a.vel.y*4 : 0;
+  a.fvx = v.x; a.fvy = v.y;
 }
 
 function maybeTriggerFixit(a){
@@ -1398,7 +1481,7 @@ function startAlienFixit(a){
   state.shake = Math.min(state.shake+18, 26);
   a.state='falling';
   a.x = topX; a.y = topY; a.baseX = topX; a.baseY = topY;
-  a.fvy = 0;
+  a.fvx = 0; a.fvy = 0;
   a.fixitMode = true;
   a.walkPhase = null;
 }
@@ -2091,7 +2174,6 @@ function update(){
   }
 
   const sc=layout.spawnCircle;
-  const fb=layout.frontBounds;
   for(const r of state.rocks){
     r.rot += r.rotSpeed*dt;
     if(r.state==='floating'){
@@ -2110,17 +2192,12 @@ function update(){
     } else if(r.state==='held'){
       r.scale = lerp(r.scale, r.targetScale, Math.min(1,dt*8));
     } else if(r.state==='falling'){
-      r.fvy = (r.fvy||0) + 420*dt;
-      r.y += r.fvy*dt;
-      r.x += (r.fvx||0)*dt;
-      r.x = clamp(r.x, fb.x0, fb.x1);
-      const pTop = layout.iris.cy - layout.iris.r*0.2;
-      const pBottom = layout.floorBottom;
-      const pt = clamp((r.y-pTop)/(pBottom-pTop), 0, 1);
-      r.scale = lerp(0.62, 1.7, pt);
-      const floorY = layout.floorBottom - r.size*0.4;
-      if(r.y>=floorY){
-        r.y=floorY; r.fvy=0; r.fvx=0; r.state='settled'; r.baseX=r.x; r.baseY=r.y;
+      const res = stepFallingBody(r, dt);
+      r.rot += (r.fvx/r.size)*dt*0.6;   // tumbles in the direction it's flying / rolling
+      if(res==='rest'){
+        r.state='settled'; r.baseX=r.x; r.baseY=r.y;
+      } else if(res){
+        r.state='gone';   // went over the edge: unloaded
       }
     } else if(r.state==='settled'){
       r.x = r.baseX;
@@ -2179,14 +2256,11 @@ function update(){
           else { a.walkPhase='track1'; a.interactCooldown=0; }
         }
       } else {
-      a.x = clamp(a.x, fb.x0, fb.x1);
-      const pTop = layout.iris.cy - layout.iris.r*0.2;
-      const pBottom = layout.floorBottom;
-      const pt = clamp((a.y-pTop)/(pBottom-pTop), 0, 1);
-      a.scale = lerp(0.62, 1.7, pt);
-      const floorY = layout.floorBottom - a.size*0.4;
-      if(a.y>=floorY){
-        a.y=floorY; a.fvy=0; a.fvx=0; a.state='settled'; a.baseX=a.x; a.baseY=a.y;
+      const res = stepFallingBody(a, dt);
+      if(res===-1 || res===1){
+        alienFellOffEdge(a, res);
+      } else if(res==='rest'){
+        a.state='settled'; a.baseX=a.x; a.baseY=a.y;
         if(a.fixitMode){
           a.fixitMode = false;
           a.message = choice(ALIEN_FIXIT_MESSAGES);
