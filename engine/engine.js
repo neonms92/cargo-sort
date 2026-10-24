@@ -2894,9 +2894,17 @@ function drawSpeechBubble(x,y,text){
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(text, bx+w/2, by+h/2+1);
 }
+// Only aliens you can see talk. Bubbles are kept on screen (drawSpeechBubble), so one belonging to
+// an alien that has left the bay (walked or been thrown off an edge, carried below by the arm, now
+// waiting in the off-screen gap) would otherwise hang at the screen edge.
+function alienBubbleVisible(a){
+  if(alienIsOffscreen(a) || a.walkPhase==='hiding') return false;
+  const rad = a.size*a.scale;
+  return a.x + rad >= 0 && a.x - rad <= W;
+}
 function drawAlienBubbles(){
   state.aliens.forEach(a=>{
-    if(a.bubbleT>0 && a.message){
+    if(a.bubbleT>0 && a.message && alienBubbleVisible(a)){
       const op = a.bubbleT>0.6 ? 1 : a.bubbleT/0.6;
       ctx.save();
       ctx.globalAlpha=op;
