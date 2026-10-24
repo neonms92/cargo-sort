@@ -509,7 +509,62 @@ const AudioEngine = (function(){
     src.start(now); src.stop(now+1.05);
   }
 
-  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock,
+  // A short electrical crackle: a few stuttering bursts of hiss.
+  function spark(){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource();
+    src.buffer=noiseBuffer;
+    const filt=ctx.createBiquadFilter(); filt.type='highpass'; filt.frequency.value=2400;
+    const g=ctx.createGain();
+    const n=4+Math.floor(Math.random()*4), step=0.022;
+    g.gain.setValueAtTime(0.0001, now);
+    for(let i=0;i<n;i++) g.gain.setValueAtTime(i%2 ? 0.008 : 0.02+0.07*(1-i/n), now+i*step);
+    g.gain.setValueAtTime(0.0001, now+n*step);
+    src.connect(filt); filt.connect(g); g.connect(master);
+    src.start(now, Math.random()*0.8); src.stop(now+n*step+0.02);
+  }
+
+  // The hull straining: a low wobbling roar that swells and fades over `dur` seconds, sometimes
+  // with a metal groan in it.
+  function rumble(dur){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime, end=now+dur;
+    const env=(peak)=>{
+      const g=ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(peak, now+Math.min(0.8, dur*0.35));
+      g.gain.setValueAtTime(peak, end-Math.min(0.8, dur*0.35));
+      g.gain.linearRampToValueAtTime(0.0001, end);
+      g.connect(master);
+      return g;
+    };
+    const src=ctx.createBufferSource();
+    src.buffer=noiseBuffer; src.loop=true;
+    const filt=ctx.createBiquadFilter(); filt.type='lowpass'; filt.frequency.value=140;
+    const wob=ctx.createGain(); wob.gain.value=1;
+    const lfo=ctx.createOscillator(); lfo.frequency.value=rand(2.5,4.5);
+    const lfoGain=ctx.createGain(); lfoGain.gain.value=0.45;
+    lfo.connect(lfoGain); lfoGain.connect(wob.gain);
+    src.connect(filt); filt.connect(wob); wob.connect(env(0.32));
+    const osc=ctx.createOscillator();
+    osc.type='sine'; osc.frequency.setValueAtTime(46, now); osc.frequency.linearRampToValueAtTime(38, end);
+    osc.connect(env(0.1));
+    src.start(now); lfo.start(now); osc.start(now);
+    src.stop(end+0.05); lfo.stop(end+0.05); osc.stop(end+0.05);
+    if(Math.random()<0.5){
+      const groan=ctx.createOscillator();
+      groan.type='sawtooth';
+      const f0=rand(70,95);
+      groan.frequency.setValueAtTime(f0, now);
+      groan.frequency.linearRampToValueAtTime(f0*rand(0.75,0.9), end);
+      const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=320; bp.Q.value=4;
+      groan.connect(bp); bp.connect(env(0.03));
+      groan.start(now); groan.stop(end+0.05);
+    }
+  }
+
+  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock, spark, rumble,
           get running(){return !!ctx;}};
 })();
 
@@ -551,13 +606,16 @@ function resize(){
   canvas.style.width=W+'px'; canvas.style.height=H+'px';
   ctx.setTransform(DPR,0,0,DPR,0,0);
   computeLayout();
-  // Walls and floor never change between resizes: they live on a canvas of their own behind the
-  // scene, painted here once, so they cost nothing per frame.
+  // Walls and floor (and their battle damage) live on a canvas of their own behind the scene,
+  // painted only on a resize or when the damage changes, so they cost nothing per frame.
   bgCanvas.width = W*DPR; bgCanvas.height=H*DPR;
   bgCanvas.style.width=W+'px'; bgCanvas.style.height=H+'px';
+  paintBackground();
+}
+function paintBackground(){
   const main=ctx; ctx=bgCanvas.getContext('2d');
   ctx.setTransform(DPR,0,0,DPR,0,0);
-  try{ drawBayStructure(); drawFloor(); } finally { ctx=main; }
+  try{ drawBayStructure(); drawFloor(); drawHullDamage(); } finally { ctx=main; }
 }
 window.addEventListener('resize', resize);
 
@@ -690,6 +748,11 @@ const state={
   dragLast:{x:0,y:0},
   dragSamples:[],
   shake:0,
+  // Battle damage painted on the walls and floor, one group of marks per lost hull step (see
+  // syncDamageMarks), and the low-hull rumble.
+  scars:[], scarGroup:0,
+  rumble:{t:0, dur:0, next:2, shake:0},
+  irisSparkT:0,
   warnT:0,
   irisOpen:1, irisTarget:1,
   transition:null,
@@ -1208,9 +1271,11 @@ function renderHull(){
   else if(state.hull<65) fill.style.background='linear-gradient(90deg,#c98a2d,var(--amber))';
   else fill.style.background='linear-gradient(90deg,#3fce8a,var(--success))';
 }
-function damageHull(amount){
+// `site` (optional): the barrel slot that blew up, which gets a scorch mark on the floor around it.
+function damageHull(amount, site){
   state.hull = clamp(state.hull-amount, 0, 100);
   renderHull();
+  syncDamageMarks(site);
   state.warnT=0.5;
   state.shake = Math.min(state.shake+18, 26);
   if(state.hull<=0 && state.phase==='playing' && !state.breaching){
@@ -1222,6 +1287,309 @@ function damageHull(amount){
 function healHull(amount){
   state.hull = clamp(state.hull+amount, 0, 100);
   renderHull();
+  syncDamageMarks();
+}
+
+// ---------- Structural damage ----------
+// Hull integrity goes in 15% steps. Every lost step scars the bay a little more: a scorch mark on the
+// floor around the barrel slot that blew, plus soot, cracks and (further down) torn plating on the walls
+// and floor, more and bigger the lower the hull gets. A repair takes the latest step's marks away again.
+// The marks are painted on the background canvas, so they cost nothing per frame.
+// Below that: from 65% moving machinery throws sparks, more often each step; from 40% aliens coming
+// back on-screen sometimes worry out loud; from 25% the bay rumbles now and then, and from 10% the
+// rumbles last longer and come more often.
+const HULL_STEP = 15;
+const SPARK_HULL = 65, COMPLAIN_HULL = 40, RUMBLE_HULL = 25, RUMBLE_SUSTAINED_HULL = 10;
+function damageStep(){ return Math.round((100-state.hull)/HULL_STEP); }
+function damageGroupCount(){ return new Set(state.scars.map(s=>s.group)).size; }
+// Bring the marks in line with the hull: one group per lost step.
+function syncDamageMarks(site){
+  let changed=false;
+  while(damageGroupCount() < damageStep()){ addDamageGroup(damageGroupCount()+1, site); site=undefined; changed=true; }
+  while(damageGroupCount() > damageStep()){
+    const g=state.scars[state.scars.length-1].group;
+    state.scars=state.scars.filter(s=>s.group!==g);
+    changed=true;
+  }
+  if(changed && W) paintBackground();
+}
+function addDamageGroup(step, site){
+  const group=++state.scarGroup, size=0.7+step*0.12;
+  const seed=()=>randInt(1, 2e9);
+  if(site!==undefined) state.scars.push({group, kind:'blast', site, size, seed:seed()});
+  const n = 1 + (step>=3?1:0) + (step>=5?1:0);
+  for(let i=0;i<n;i++){
+    const spot=pickScarSpot();
+    if(!spot) continue;
+    const kinds = step>=4 ? ['scorch','crack','gash','gash'] : ['scorch','crack','crack'];
+    state.scars.push({group, kind:choice(kinds), floor:spot.floor, u:spot.u, v:spot.v,
+      size:size*rand(0.8,1.2), rot:rand(0,TAU), seed:seed()});
+  }
+}
+// Where a mark sits on screen. Positions are stored relative to the wall or floor (or as a barrel
+// slot), so they stay put through a resize.
+function scarPos(s){
+  if(s.kind==='blast'){ const a=layout.barrels4[s.site]; return {x:a.x, y:a.y}; }
+  return {x:s.u*W, y: s.floor ? lerp(layout.floorTop, layout.floorBottom, s.v) : s.v*layout.floorTop};
+}
+// A random spot on the wall or floor that isn't hidden behind the iris, the airlock, the HUD or a
+// barrel, and isn't on top of another mark.
+function pickScarSpot(){
+  const {cx,cy,r}=layout.iris, c=layout.chute, cb=layout.chuteBtn, R=layout.barrelR, m=24;
+  const huds=['hullPanel','topRight'].map(id=>document.getElementById(id).getBoundingClientRect());
+  const holes=layout.barrelHoles.concat([layout.armHole]);
+  for(let tries=0; tries<40; tries++){
+    const floor = Math.random()<0.4;
+    const s={floor, u:rand(0.04,0.96), v: floor ? rand(0.05,0.97) : rand(0.08,0.9)};
+    const p=scarPos(s);
+    if(!floor && Math.hypot(p.x-cx, p.y-cy) < r*1.3+m) continue;
+    if(Math.abs(p.x-c.x) < c.w/2+m && p.y > cb.y-cb.h/2-m && p.y < c.y+c.h/2+m) continue;
+    if(huds.some(b=> p.x>b.left-m && p.x<b.right+m && p.y>b.top-m && p.y<b.bottom+m)) continue;
+    if(floor && holes.some(h=> Math.abs(p.x-h.x) < h.rx+R*0.6 && p.y > h.y-layout.barrelH-R && p.y < h.y+h.ry+R*0.5)) continue;
+    if(layout.holos.some(g=> Math.abs(p.x-g.x) < g.w/2+m && p.y > g.y-g.h/2-m && p.y < Math.max(g.y+g.h/2, g.ey)+m)) continue;
+    if(state.scars.some(o=> o.kind!=='blast' && Math.hypot(scarPos(o).x-p.x, scarPos(o).y-p.y) < 60)) continue;
+    return s;
+  }
+  return null;
+}
+// Small seeded PRNG, so a mark comes out the same shape every time the background is repainted.
+function seededRand(seed){
+  let s=seed>>>0;
+  return ()=>{
+    s=(s+0x6D2B79F5)>>>0;
+    let t=s; t=Math.imul(t^(t>>>15), t|1); t^=t+Math.imul(t^(t>>>7), t|61);
+    return ((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+function drawHullDamage(){
+  const k=clamp(Math.min(W,H)/700, 0.6, 1.3);
+  for(const s of state.scars){
+    const p=scarPos(s), rnd=seededRand(s.seed), onFloor = s.kind==='blast' || s.floor;
+    ctx.save();
+    // keep wall marks on the wall and floor marks on the floor
+    ctx.beginPath();
+    if(onFloor) ctx.rect(0, layout.floorTop, W, H-layout.floorTop); else ctx.rect(0, 0, W, layout.floorTop);
+    ctx.clip();
+    ctx.translate(p.x, p.y);
+    if(s.kind==='blast') drawScorch(rnd, layout.barrelR*1.8*s.size, 0.45, false, 1.8);
+    else if(s.kind==='scorch') drawScorch(rnd, 34*k*s.size, s.floor ? 0.38 : 1, !s.floor, s.floor ? 1.5 : 1);
+    else if(s.kind==='crack') drawCrack(rnd, 60*k*s.size, s.floor ? 0.45 : 1, s.rot);
+    else drawGash(rnd, 26*k*s.size, s.floor ? 0.45 : 1, s.rot);
+    ctx.restore();
+  }
+}
+// Soot from a blast: a heat-tinted halo, overlapping blotches and tapered rays. `squash` flattens it
+// onto the floor; on the wall, smoke stains climb up from it. `tint` strengthens the heat halo, which
+// is what shows on the darker floor.
+function drawScorch(rnd, R, squash, smoke, tint){
+  const ht=tint||1;
+  ctx.save();
+  ctx.scale(1, squash);
+  let g=ctx.createRadialGradient(0,0,R*0.3, 0,0,R*1.3);
+  g.addColorStop(0,`rgba(160,95,45,${0.16*ht})`); g.addColorStop(0.6,`rgba(80,100,160,${0.08*ht})`); g.addColorStop(1,'rgba(80,100,160,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,R*1.3,0,TAU); ctx.fill();
+  for(let i=0;i<7;i++){
+    const a=rnd()*TAU, d=rnd()*R*0.45, rr=R*(0.35+rnd()*0.45);
+    const x=Math.cos(a)*d, y=Math.sin(a)*d;
+    g=ctx.createRadialGradient(x,y,0, x,y,rr);
+    g.addColorStop(0,'rgba(5,4,3,0.5)'); g.addColorStop(1,'rgba(5,4,3,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,rr,0,TAU); ctx.fill();
+  }
+  ctx.fillStyle='rgba(5,4,3,0.38)';
+  const rays=9+Math.floor(rnd()*7);
+  for(let i=0;i<rays;i++){
+    const a=rnd()*TAU, w=0.05+rnd()*0.08, r0=R*0.35, r1=R*(0.85+rnd()*0.75);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a-w)*r0, Math.sin(a-w)*r0);
+    ctx.lineTo(Math.cos(a)*r1, Math.sin(a)*r1);
+    ctx.lineTo(Math.cos(a+w)*r0, Math.sin(a+w)*r0);
+    ctx.closePath(); ctx.fill();
+  }
+  // a few flecks of spatter beyond the rays
+  for(let i=0;i<10;i++){
+    const a=rnd()*TAU, d=R*(0.9+rnd()*0.8);
+    ctx.beginPath(); ctx.arc(Math.cos(a)*d, Math.sin(a)*d, 0.8+rnd()*1.8, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+  if(smoke){
+    for(let i=0;i<3;i++){
+      const x=(rnd()-0.5)*R*0.9, y=-R*(0.9+rnd()*0.9), rx=R*(0.25+rnd()*0.25), ry=R*(0.8+rnd()*0.6);
+      ctx.save();
+      ctx.translate(x,y); ctx.scale(rx/ry, 1);
+      g=ctx.createRadialGradient(0,0,0, 0,0,ry);
+      g.addColorStop(0,'rgba(5,4,3,0.2)'); g.addColorStop(1,'rgba(5,4,3,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,ry,0,TAU); ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+// A jagged branching crack in the plating, spreading from a dented impact point.
+function drawCrack(rnd, len, squash, rot){
+  const lines=[];
+  const grow=(x, y, ang, l, depth)=>{
+    const pts=[{x,y}], n=6+Math.floor(rnd()*4);
+    for(let i=0;i<n;i++){
+      ang += (rnd()-0.5)*0.9;
+      x += Math.cos(ang)*l/n; y += Math.sin(ang)*l/n;
+      pts.push({x,y});
+      if(depth<2 && rnd()<0.22) grow(x, y, ang+(rnd()<0.5?-1:1)*(0.5+rnd()*0.6), l*0.45, depth+1);
+    }
+    lines.push({pts, w:[2.4,1.5,1][depth]});
+  };
+  const arms=2+Math.floor(rnd()*2);
+  for(let i=0;i<arms;i++) grow(0, 0, rot + i*TAU/arms + (rnd()-0.5)*0.8, len*(0.5+rnd()*0.6), 0);
+  ctx.save();
+  ctx.scale(1, squash);
+  const dent=ctx.createRadialGradient(0,0,0, 0,0,len*0.16);
+  dent.addColorStop(0,'rgba(0,0,0,0.55)'); dent.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=dent; ctx.beginPath(); ctx.arc(0,0,len*0.16,0,TAU); ctx.fill();
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  const stroke=(dy, style, wk)=>{
+    ctx.strokeStyle=style;
+    for(const ln of lines){
+      ctx.lineWidth=ln.w*wk;
+      ctx.beginPath();
+      ln.pts.forEach((p,i)=> i ? ctx.lineTo(p.x, p.y+dy) : ctx.moveTo(p.x, p.y+dy));
+      ctx.stroke();
+    }
+  };
+  stroke(1.2, 'rgba(160,180,205,0.16)', 0.6);   // lit lower lip of the crack
+  stroke(0, 'rgba(0,0,0,0.8)', 1);
+  ctx.restore();
+}
+// Torn plating: a jagged hole into the dark structure behind, with an ember glow deep inside, a bent
+// lip catching the light and a couple of loose wires, all ringed with soot.
+function drawGash(rnd, R, squash, rot){
+  drawScorch(rnd, R*1.4, squash, squash===1, squash===1 ? 1 : 1.5);
+  ctx.save();
+  ctx.scale(1, squash);
+  ctx.rotate(rot*0.3);
+  const n=14, pts=[];
+  const ax=1+rnd()*0.6;   // a little longer than it is tall
+  for(let i=0;i<n;i++){
+    const a=i/n*TAU, rr=R*(i%2 ? 0.55+rnd()*0.25 : 0.85+rnd()*0.35);
+    pts.push({x:Math.cos(a)*rr*ax, y:Math.sin(a)*rr*0.7});
+  }
+  const path=()=>{ ctx.beginPath(); pts.forEach((p,i)=> i ? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y)); ctx.closePath(); };
+  path(); ctx.fillStyle='#030406'; ctx.fill();
+  ctx.save();
+  path(); ctx.clip();
+  const glow=ctx.createRadialGradient(0,R*0.15,0, 0,R*0.15,R*0.8);
+  glow.addColorStop(0,'rgba(255,90,40,0.35)'); glow.addColorStop(1,'rgba(255,90,40,0)');
+  ctx.fillStyle=glow; ctx.fillRect(-R*2,-R*2,R*4,R*4);
+  // a structural rib crossing the hole
+  ctx.strokeStyle='rgba(60,70,85,0.9)'; ctx.lineWidth=R*0.12;
+  ctx.beginPath(); ctx.moveTo(-R*2, R*(rnd()-0.5)*0.6); ctx.lineTo(R*2, R*(rnd()-0.5)*0.6); ctx.stroke();
+  ctx.restore();
+  // bent lip: light along the upper edge, dark along the lower
+  ctx.lineJoin='round';
+  for(let i=0;i<n;i++){
+    const p=pts[i], q=pts[(i+1)%n];
+    ctx.strokeStyle = (p.y+q.y)<0 ? 'rgba(150,165,185,0.45)' : 'rgba(0,0,0,0.7)';
+    ctx.lineWidth=1.6;
+    ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke();
+  }
+  // loose wires hanging out
+  const wires=1+Math.floor(rnd()*2);
+  for(let i=0;i<wires;i++){
+    const p=pts[Math.floor(rnd()*n)];
+    ctx.strokeStyle=['rgba(220,80,60,0.8)','rgba(230,190,70,0.8)','rgba(90,170,220,0.8)'][Math.floor(rnd()*3)];
+    ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.moveTo(p.x*0.8, p.y*0.8);
+    ctx.quadraticCurveTo(p.x*0.3+R*(rnd()-0.5), R*(0.5+rnd()*0.5), p.x*0.5+R*(rnd()-0.5)*0.8, R*(0.6+rnd()*0.6));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ---- Sparks ----
+// From 65% down, moving machinery (the arm, iris, lever, barrel elevators, airlock hatch) sometimes
+// throws a shower of sparks as it moves: a 20% chance at 55%, rising 15% with each step after.
+function sparkChance(){ return state.hull>SPARK_HULL ? 0 : clamp(0.2 + (55-state.hull)/HULL_STEP*0.15, 0.2, 0.7); }
+function maybeSpark(x, y, dir){
+  if(state.phase==='intro' || state.phase==='gameover') return false;
+  if(Math.random()>=sparkChance()) return false;
+  spawnSparkShower(x, y, dir);
+  return true;
+}
+// `dir` (optional): the general direction they fly in; otherwise every which way.
+function spawnSparkShower(x, y, dir){
+  const n=randInt(8,16);
+  for(let i=0;i<n;i++){
+    const ang = dir===undefined ? rand(0,TAU) : dir+rand(-0.9,0.9), sp=rand(120,380);
+    state.particles.push({type:'zap', x, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp - rand(40,140),
+      life:0, maxLife:rand(0.35,0.8), size:rand(0.8,1.7)});
+  }
+  state.particles.push({type:'zapFlash', x, y, life:0, maxLife:0.14, size:rand(10,16)});
+  AudioEngine.spark();
+}
+// While the iris blades are moving, roll for sparks off a random point of the ring every so often.
+function updateIrisSparks(dt){
+  if(Math.abs(state.irisTarget-state.irisOpen) < 0.03){ state.irisSparkT=0; return; }
+  state.irisSparkT -= dt;
+  if(state.irisSparkT>0) return;
+  state.irisSparkT = 0.4;
+  const {cx,cy,r}=layout.iris;
+  for(let tries=0; tries<6; tries++){
+    const a=rand(0,TAU), x=cx+Math.cos(a)*r*1.08, y=cy+Math.sin(a)*r*1.08;
+    if(y < layout.floorTop-6){ maybeSpark(x, y, a); return; }
+  }
+}
+
+// ---- Worried aliens ----
+// From 40% down, an alien coming back on-screen has a 25% chance to complain once it's a quarter
+// of the way along the track it's starting.
+const ALIEN_COMPLAIN_CHANCE = 0.25;
+const ALIEN_DAMAGE_MESSAGES=[
+  "Something sounds broken.",
+  "You guys have lifejackets, right?",
+  "Is the floor supposed to do that?",
+  "I smell smoke. Is that normal?",
+  "Who's in charge of repairs around here?",
+  "I'd like to speak to the ship's engineer.",
+];
+// Called as an alien starts a track at `fromX`, heading for `toX`.
+function maybeScheduleComplaint(a, fromX, toX){
+  a.complainAtX = null; a.complainDue = false;
+  if(state.hull>COMPLAIN_HULL || Math.random()>=ALIEN_COMPLAIN_CHANCE) return;
+  a.complainAtX = lerp(fromX, toX, 0.25);
+}
+// Called each frame as a walker moves from prevX to a.baseX. If it's mid-sentence when it passes
+// the mark, it says its piece as soon as it's done.
+function updateComplaint(a, prevX){
+  if(a.complainAtX!=null && prevX!==a.baseX && (prevX-a.complainAtX)*(a.baseX-a.complainAtX)<=0){
+    a.complainAtX = null; a.complainDue = true;
+  }
+  if(a.complainDue && a.bubbleT<=0){
+    a.complainDue = false;
+    a.message = choice(ALIEN_DAMAGE_MESSAGES);
+    a.bubbleT = 3.5;
+  }
+}
+
+// ---- Rumble ----
+// From 25% down the bay rumbles every so often: a low roar and a light tremor. From 10% the rumbles
+// are no stronger, but they last longer and the quiet spells between them are shorter.
+function updateRumble(dt){
+  const rb=state.rumble;
+  const active = state.hull<=RUMBLE_HULL && state.hull>0 && !state.breaching &&
+                 (state.phase==='playing' || state.phase==='transition');
+  if(!active){ rb.t=0; rb.shake=0; rb.next=rand(1.5,3); return; }   // the first one comes soon after the hull drops this far
+  if(rb.t>0){
+    rb.t = Math.max(0, rb.t-dt);
+    const u = 1 - rb.t/rb.dur;
+    const env = Math.min(1, u/0.25, (1-u)/0.25);
+    rb.shake = reducedMotion ? 0 : 2.4*env*(0.75+0.25*Math.sin(state.t*19));
+    return;
+  }
+  rb.shake = 0;
+  rb.next -= dt;
+  if(rb.next>0) return;
+  const sustained = state.hull<=RUMBLE_SUSTAINED_HULL;
+  rb.dur = sustained ? rand(3.5,5.5) : rand(1.2,2);
+  rb.t = rb.dur;
+  rb.next = sustained ? rand(2,4) : rand(7,13);
+  AudioEngine.rumble(rb.dur);
 }
 function playHullBreachSequence(){
   state.phase='breach';
@@ -1639,6 +2007,7 @@ function launchChute(){
   ch.hatchT=CHUTE_HATCH_DUR;
   state.irisTarget=1; // open up so everyone gets to watch
   AudioEngine.airlock();
+  maybeSpark(layout.chute.x + layout.chute.w*0.36*rand(-1,1), layout.chute.y - layout.chute.h*0.05 - layout.chute.w*0.3);
 }
 // Out through the hatch: from here it's a little figure in space, crossing the window left to right.
 function startChuteFlight(a){
@@ -1797,6 +2166,8 @@ function evictAlienFromBarrel(a, idx){
 // The lever does nothing at all except blink a red light while it's down.
 function flipLever(){
   state.leverDown = !state.leverDown;
+  const L=layout.lever;
+  maybeSpark(L.x, L.y, -Math.PI/2);
 }
 
 function pressRedButton(){
@@ -1866,7 +2237,7 @@ function mismatch(idx, r){
   removeRock(r);
   spawnExplosion(anchor.x,midY);
   spawnBarrelDebris(anchor.x, midY);
-  damageHull(15);
+  damageHull(15, idx);
   AudioEngine.explosion();
   trySpawnRandom();
 }
@@ -2131,6 +2502,14 @@ function advanceArmStep(job){
   else if(s==='rise' || s==='reach' || s==='carry' || s==='place' || s==='retract') AudioEngine.servo(90, 170, d);
   else if(s==='swing') AudioEngine.servo(120, 320, d);
   else if(s==='lower' || s==='sink') AudioEngine.servo(170, 70, d);
+  if(s==='open' || s==='close'){
+    const h=layout.armHole;
+    maybeSpark(h.x, h.y, -Math.PI/2);
+  } else if(s!=='done' && d>0.2){
+    // off whichever joint is up out of the floor
+    const p=armPose(), joints=[p.elbow, p.wrist, p.sh].filter(j=>j.y < layout.armHole.y);
+    if(joints.length){ const j=choice(joints); maybeSpark(j.x, j.y); }
+  }
 }
 function updateArm(dt){
   const arm=state.arm;
@@ -2337,7 +2716,11 @@ function updateBarrelSlots(dt){
       if(b.destroyT<=0){ b.status='rising'; b.riseT=0; }
     }
     if(b.status==='rising'){
-      if(b.riseT===0){ startSlotPeek(b); AudioEngine.servo(80, 160, b.peek ? SLOT_DOOR_DUR : SLOT_DOOR_DUR+SLOT_RISE_DUR); }
+      if(b.riseT===0){
+        startSlotPeek(b); AudioEngine.servo(80, 160, b.peek ? SLOT_DOOR_DUR : SLOT_DOOR_DUR+SLOT_RISE_DUR);
+        const h=layout.barrelHoles[state.barrels.indexOf(b)];
+        maybeSpark(h.x + h.rx*rand(-0.8,0.8), h.y, -Math.PI/2);
+      }
       if(b.peek && !state.aliens.includes(b.peek.alien)) endSlotPeek(b);
       if(b.peek && b.riseT>=SLOT_DOOR_DUR){
         // doors are open: hold the barrel down below while the borrowed alien has its look
@@ -2347,7 +2730,11 @@ function updateBarrelSlots(dt){
       }
       b.riseT+=dt;
       b.door=clamp(b.riseT/SLOT_DOOR_DUR,0,1);
-      if(b.riseT>=SLOT_DOOR_DUR+SLOT_RISE_DUR) b.status='ready'; // usable now; doors close underneath it
+      if(b.riseT>=SLOT_DOOR_DUR+SLOT_RISE_DUR){
+        b.status='ready'; // usable now; doors close underneath it
+        const h=layout.barrelHoles[state.barrels.indexOf(b)];
+        maybeSpark(h.x + h.rx*choice([-1,1]), h.y);
+      }
     } else if(b.door>0){
       b.door=Math.max(0, b.door-dt/SLOT_DOOR_DUR);
     }
@@ -2413,6 +2800,8 @@ function update(){
   updateArm(dt);
   updateBarrelSlots(dt);
   updateChute(dt);
+  updateIrisSparks(dt);
+  updateRumble(dt);
   // Sector change only once the arm has hauled away all four barrels.
   if(state.phase==='playing' && !state.breaching && armIdle() &&
      state.barrels.every(b=>b.status==='gone')){
@@ -2563,6 +2952,7 @@ function update(){
         a.baseY = layout.floorBottom - a.size*0.4;
         a.x = a.baseX;
         a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
+        updateComplaint(a, prevX);
         maybeTriggerAbduct(a, prevX);
 
         if(a.carrying && !state.rocks.includes(a.carrying)) a.carrying = null;   // cleared by a sector reset
@@ -2601,6 +2991,7 @@ function update(){
           : (a.baseX - a.size*a.scale > W + ALIEN_TRACK_EDGE_MARGIN);
         if(track1Exited){
           if(a.carrying){ a.carrying.state='gone'; a.carrying=null; }   // carried off the edge: unloaded
+          a.complainAtX = null; a.complainDue = false;
           a.walkPhase='gap';
           a.waitTimer = ALIEN_TRACK_GAP_SECONDS;
         }
@@ -2634,6 +3025,7 @@ function update(){
             ? -a.size*a.scale - ALIEN_TRACK_EDGE_MARGIN
             : W + a.size*a.scale + ALIEN_TRACK_EDGE_MARGIN;
           a.x = a.baseX; a.y = a.baseY;
+          maybeScheduleComplaint(a, a.baseX, a.walksReverse ? W + ALIEN_TRACK_EDGE_MARGIN : -ALIEN_TRACK_EDGE_MARGIN);
           a.buttonRolled = false;
           a.leverRolled = false;
           a.climbRolled = false;
@@ -2655,10 +3047,12 @@ function update(){
       } else if(a.walkPhase==='hiding'){
         // waiting silently inside its chosen barrel until a rock is dropped in — see handleBarrelDrop
       } else if(a.walkPhase==='track2'){
+        const prevX = a.baseX;
         a.baseX += alienWalkStep(a, ALIEN_TRACK2_SPEED, dt)*(a.walksReverse?1:-1);
         a.baseY = layout.floorTop;
         a.x = a.baseX;
         a.y = a.baseY + Math.sin(state.t*1.0+a.phase)*0.7;
+        updateComplaint(a, prevX);
 
         if(!a.buttonRolled && Math.abs(a.baseX-layout.redButton.x) < 14){
           a.buttonRolled = true;
@@ -2705,6 +3099,7 @@ function update(){
             : -a.size*a.scale - ALIEN_TRACK_EDGE_MARGIN;
           a.baseY = layout.floorBottom - a.size*0.4;
           a.x = a.baseX; a.y = a.baseY;
+          maybeScheduleComplaint(a, a.baseX, a.walksReverse ? -ALIEN_TRACK_EDGE_MARGIN : W + ALIEN_TRACK_EDGE_MARGIN);
         }
       } else {
         // Landed but walk cycle not yet initialized (safety fallback) — idle bob in place.
@@ -2745,6 +3140,8 @@ function update(){
       p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.94; p.vy*=0.94;
     } else if(p.type==='ejectRock'){
       p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy -= 40*dt;
+    } else if(p.type==='zap'){
+      p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy += 700*dt; p.vx*=0.985;
     }
   }
   state.particles = state.particles.filter(p=>p.life<p.maxLife);
@@ -2963,7 +3360,7 @@ function draw(){
   ctx.clearRect(0,0,W,H);
   ctx.save();
   // Screen shake moves the whole stage (both canvases) rather than redrawing it offset.
-  const sh = state.shake, stage=canvas.parentNode;
+  const sh = Math.max(state.shake, state.rumble.shake), stage=canvas.parentNode;
   if(sh>0.1){
     stage.style.transform='translate('+((Math.random()-0.5)*sh).toFixed(1)+'px,'+((Math.random()-0.5)*sh).toFixed(1)+'px)';
     stage.dataset.shaking='1';
@@ -3838,6 +4235,22 @@ function drawParticles(){
       ctx.fillStyle='#ffd58a';
       ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,TAU); ctx.fill();
       ctx.restore();
+    } else if(p.type==='zap'){
+      // a hot streak along its direction of travel, white turning orange as it cools
+      ctx.save();
+      ctx.globalAlpha = 1-t*t;
+      ctx.strokeStyle = `hsl(${lerp(55,22,t)},100%,${lerp(92,60,t)}%)`;
+      ctx.lineWidth = p.size; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(p.x-p.vx*0.025, p.y-p.vy*0.025); ctx.lineTo(p.x, p.y); ctx.stroke();
+      ctx.restore();
+    } else if(p.type==='zapFlash'){
+      ctx.save();
+      ctx.globalAlpha = 1-t;
+      const g=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,p.size);
+      g.addColorStop(0,'rgba(235,245,255,0.95)'); g.addColorStop(0.4,'rgba(150,200,255,0.5)'); g.addColorStop(1,'rgba(150,200,255,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,TAU); ctx.fill();
+      ctx.restore();
     } else if(p.type==='ejectRock'){
       ctx.save();
       ctx.globalAlpha = 1-t;
@@ -3896,7 +4309,7 @@ const SaveGame = (()=>{
       aliens.push(o);
     }
     return {
-      v:VERSION, mode:MODE.id, W, H, sector:state.sector, hull:state.hull,
+      v:VERSION, mode:MODE.id, W, H, sector:state.sector, hull:state.hull, scars:state.scars,
       irisOpen:state.irisOpen, irisTarget:state.irisTarget, leverDown:state.leverDown,
       nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector,
       alienCloneCounters:state.alienCloneCounters,
@@ -3951,6 +4364,10 @@ function restoreGame(d){
   state.sector=d.sector;
   document.getElementById('sectorValue').textContent = String(d.sector).padStart(2,'0');
   state.hull=d.hull; renderHull();
+  // Battle damage as it was (a save from before it was tracked gets fresh marks to match the hull).
+  state.scars = Array.isArray(d.scars) ? d.scars : [];
+  state.scarGroup = state.scars.reduce((m,s)=>Math.max(m, s.group), 0);
+  syncDamageMarks(); paintBackground();
   state.irisOpen=d.irisOpen; state.irisTarget=d.irisTarget; state.leverDown=!!d.leverDown;
   state.nebulaHue=d.nebulaHue; state.nebulaBlobs=makeNebula(state.nebulaHue);
   state.alienSpawnedThisSector=!!d.alienSpawnedThisSector;
@@ -4036,6 +4453,7 @@ function beginShift(resume, auto){
   SaveGame.clear();
   state.aliens=[]; state.alienCloneCounters={}; state.leverDown=false; state.irisOpen=1; state.irisTarget=1;
   state.hull=100; renderHull();
+  state.scars=[]; paintBackground();
   startLevel(1);
 }
 document.getElementById('startBtn').addEventListener('click', ()=>beginShift(true));
@@ -4095,6 +4513,7 @@ document.getElementById('newShiftBtn').addEventListener('click', ()=>beginShift(
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
   state.hull=100; renderHull();
+  state.scars=[]; paintBackground();
   state.particles=[];
   state.rocks=[];
   state.aliens=[];
