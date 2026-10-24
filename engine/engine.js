@@ -612,7 +612,7 @@ const state={
   sector:1,
   // status: 'ready' (on its slot, usable) | 'carried' (in the robot arm) | 'gone' (retrieved) | 'rising' (coming up from its slot)
   //         | 'destroyed' (blown up by a mismatch; replacement rises after destroyT)
-  barrels:[0,1,2,3].map(()=>({value:null, text:null, glyph:null, holo:0, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
+  barrels:[0,1,2,3].map(()=>({value:null, text:null, glyph:null, items:[], holo:0, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
             status:'ready', door:0, riseT:0})),
   // Robot arm: one job at a time; sealed barrels wait in `queue` (barrel indices, FIFO).
   arm:{queue:[], job:null, door:0, shY:0, wrist:null, carrying:-1, side:1, fk:null},
@@ -698,7 +698,8 @@ function pickSpawnValue(){
   }
   return MODE.pickValue(state.sector);
 }
-function createRock(value){
+// `item` (optional): keep a rock's existing look ({rep, text, glyph}) instead of rolling a new one.
+function createRock(value, item){
   const size = rand(21,32);
   const pal = choice(ROCK_PALETTES);
   const sc = layout.spawnCircle;
@@ -707,7 +708,7 @@ function createRock(value){
   const x = sc.cx + Math.cos(ang)*rr;
   const y = sc.cy + Math.sin(ang)*rr;
   const s0 = rand(0.38,0.6);
-  const item = makeItem(value);
+  item = item || makeItem(value);
   return {
     id:ROCK_ID++,
     value, rep:item.rep, text:item.text, glyph:item.glyph||null,
@@ -1091,7 +1092,7 @@ function trySpawnRandom(){
 function startLevel(sector, riseBarrels){
   state.sector=sector;
   document.getElementById('sectorValue').textContent = String(sector).padStart(2,'0');
-  state.barrels.forEach(b=>{endSlotPeek(b); b.value=null;b.text=null;b.glyph=null;b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;
+  state.barrels.forEach(b=>{endSlotPeek(b); b.value=null;b.text=null;b.glyph=null;b.items=[];b.slots=0;b.sealed=false;b.flashT=0;b.sealT=0;b.fillDisplay=0;
     // Arriving at a new sector: fresh empties come up through the floor. Fresh start/reboot: just there.
     b.status = riseBarrels ? 'rising' : 'ready'; b.riseT = 0; b.door = 0;});
   resetArm();
@@ -1558,6 +1559,9 @@ function pressRedButton(){
   }
 }
 
+// What a barrel remembers about each rock it takes, so an ejected rock comes back out as itself.
+function rockItem(r){ return {value:r.value, rep:r.rep, text:r.text, glyph:r.glyph||null}; }
+
 function handleBarrelDrop(idx, r){
   const hidden = state.aliens.find(a=>a.hidingInBarrel===idx);
   if(hidden) evictAlienFromBarrel(hidden, idx);
@@ -1571,6 +1575,7 @@ function handleBarrelDrop(idx, r){
     barrel.text = r.text;
     barrel.glyph = r.glyph || null;
     barrel.slots = 1;
+    barrel.items = [rockItem(r)];
     r.state='gone';
     removeRock(r);
     barrel.flashT=0.3;
@@ -1580,6 +1585,7 @@ function handleBarrelDrop(idx, r){
   }
   if(sameValue(barrel.value, r.value)){
     barrel.slots++;
+    barrel.items.push(rockItem(r));
     r.state='gone';
     removeRock(r);
     barrel.flashT=0.3;
@@ -1597,7 +1603,7 @@ function mismatch(idx, r){
   const barrel=state.barrels[idx];
   const anchor=layout.barrels4[idx];
   const midY = anchor.y - layout.barrelH*0.5;
-  barrel.value=null; barrel.text=null; barrel.glyph=null; barrel.slots=0; barrel.sealed=false;
+  barrel.value=null; barrel.text=null; barrel.glyph=null; barrel.items=[]; barrel.slots=0; barrel.sealed=false;
   barrel.flashT=0; barrel.fillDisplay=0;
   // The barrel is destroyed outright; a fresh empty one comes up out of its slot shortly after.
   barrel.status='destroyed'; barrel.destroyT=BARREL_RESPAWN_DELAY; barrel.riseT=0; barrel.door=0;
@@ -1629,8 +1635,8 @@ function ejectBarrel(idx){
   if(barrel.slots===0 || barrel.sealed || barrel.status!=='ready') return;
   const anchor=layout.barrels4[idx];
   const n=barrel.slots;
-  const formerValue=barrel.value;
-  barrel.value=null; barrel.text=null; barrel.glyph=null; barrel.slots=0; barrel.sealed=false;
+  const formerValue=barrel.value, formerItems=barrel.items;
+  barrel.value=null; barrel.text=null; barrel.glyph=null; barrel.items=[]; barrel.slots=0; barrel.sealed=false;
   AudioEngine.eject();
   spawnEjectSpark(anchor.x, anchor.y-layout.barrelH*0.5);
   for(let i=0;i<n;i++){
@@ -1642,9 +1648,11 @@ function ejectBarrel(idx){
       if(state.irisOpen>0.5){
         spawnEjectTrail(x, y, vx, vy, choice(ROCK_PALETTES));
       } else {
-        // Iris closed — the rocks have nowhere to go. Spawn real rocks carrying the barrel's
-        // former concentration and fling them into the air; they land and stay fully sortable.
-        const newRock = createRock(formerValue);
+        // Iris closed — the rocks have nowhere to go. Spawn real rocks carrying the values they
+        // went in with and fling them into the air; they land and stay fully sortable.
+        // (A barrel from a save made before items were tracked has none, so those rocks reroll.)
+        const it = formerItems[i];
+        const newRock = createRock(it ? it.value : formerValue, it);
         newRock.x = x; newRock.y = y;
         newRock.baseX = x; newRock.baseY = y;
         newRock.state = 'falling';
@@ -3450,7 +3458,7 @@ const SaveGame = (()=>{
       irisOpen:state.irisOpen, irisTarget:state.irisTarget, leverDown:state.leverDown,
       nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector,
       alienCloneCounters:state.alienCloneCounters,
-      barrels:state.barrels.map(b=>({value:b.value, text:b.text, glyph:b.glyph, slots:b.slots, sealed:b.sealed,
+      barrels:state.barrels.map(b=>({value:b.value, text:b.text, glyph:b.glyph, items:b.items, slots:b.slots, sealed:b.sealed,
         fillDisplay:b.fillDisplay, status:b.status, door:b.door, riseT:b.riseT, destroyT:b.destroyT||0})),
       aliens,
     };
@@ -3510,7 +3518,7 @@ function restoreGame(d){
   state.barrels.forEach((b,i)=>{
     const s=d.barrels[i]||{};
     endSlotPeek(b);
-    Object.assign(b, {value:s.value||null, text:s.text||null, glyph:s.glyph||s.pie||null, slots:s.slots||0, sealed:!!s.sealed,
+    Object.assign(b, {value:s.value||null, text:s.text||null, glyph:s.glyph||s.pie||null, items:s.items||[], slots:s.slots||0, sealed:!!s.sealed,
       fillDisplay:s.fillDisplay||0, status:s.status||'ready', door:s.door||0, riseT:s.riseT||0, destroyT:s.destroyT||0,
       flashT:0, sealT:0});
     if(b.sealed){ b.status='gone'; b.door=0; }      // sealed = already hauled away by the arm
