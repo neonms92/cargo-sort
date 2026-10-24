@@ -204,6 +204,11 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #protocolSwitch a:hover{color:var(--cyan);}
 #protocolSwitch .cur{color:var(--cyan);}
 #protocolSwitch .sep{color:var(--text-dim);}
+/* Catastrophic failure: the HUD loses power, and the end screen lets the wreckage show through. */
+#hullPanel, #topRight, #toolbar{transition:opacity 1.2s ease;}
+#app.failed #hullPanel, #app.failed #topRight, #app.failed #toolbar{opacity:0; pointer-events:none;}
+.overlay.adrift{background:radial-gradient(ellipse at 50% 45%, rgba(4,6,10,0.25) 0%, rgba(4,6,10,0.78) 85%); animation:adriftIn 1.6s ease both;}
+@keyframes adriftIn{from{opacity:0;} to{opacity:1;}}
 .bigBtn.danger{background:linear-gradient(180deg, var(--danger), #a52d2d); color:#2a0808; box-shadow:0 0 26px rgba(255,82,82,0.4);}
 
 
@@ -564,7 +569,49 @@ const AudioEngine = (function(){
     }
   }
 
-  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock, spark, rumble,
+  // The bay splitting open: one huge boom that falls away into the silence of space.
+  function hullFailure(){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource();
+    src.buffer=noiseBuffer; src.loop=true;
+    const filt=ctx.createBiquadFilter(); filt.type='lowpass';
+    filt.frequency.setValueAtTime(5000, now);
+    filt.frequency.exponentialRampToValueAtTime(50, now+2.4);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0.75, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+2.6);
+    src.connect(filt); filt.connect(g); g.connect(master);
+    src.start(now); src.stop(now+2.7);
+    const osc=ctx.createOscillator();
+    osc.type='sine'; osc.frequency.setValueAtTime(90, now);
+    osc.frequency.exponentialRampToValueAtTime(22, now+2);
+    const g2=ctx.createGain();
+    g2.gain.setValueAtTime(0.6, now);
+    g2.gain.exponentialRampToValueAtTime(0.0001, now+2.2);
+    osc.connect(g2); g2.connect(master);
+    osc.start(now); osc.stop(now+2.3);
+  }
+
+  // Reboot: a rising rush as the bay pulls itself back together, then the systems hum on.
+  function rebuild(){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource();
+    src.buffer=noiseBuffer; src.loop=true;
+    const filt=ctx.createBiquadFilter(); filt.type='bandpass'; filt.Q.value=1.2;
+    filt.frequency.setValueAtTime(120, now);
+    filt.frequency.exponentialRampToValueAtTime(2400, now+1.7);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.25, now+1.6);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+1.9);
+    src.connect(filt); filt.connect(g); g.connect(master);
+    src.start(now); src.stop(now+2);
+    setTimeout(sealHum, 1700);
+  }
+
+  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock, spark, rumble, hullFailure, rebuild,
           get running(){return !!ctx;}};
 })();
 
@@ -753,6 +800,7 @@ const state={
   scars:[], scarGroup:0,
   rumble:{t:0, dur:0, next:2, shake:0},
   irisSparkT:0,
+  failure:null, rebootFlash:0,
   warnT:0,
   irisOpen:1, irisTarget:1,
   transition:null,
@@ -1281,7 +1329,7 @@ function damageHull(amount, site){
   if(state.hull<=0 && state.phase==='playing' && !state.breaching){
     state.breaching = true;
     SaveGame.clear(); // the shift is lost; don't let a reload undo it
-    playHullBreachSequence();
+    startHullFailure();
   }
 }
 function healHull(amount){
@@ -1591,29 +1639,310 @@ function updateRumble(dt){
   rb.next = sustained ? rand(2,4) : rand(7,13);
   AudioEngine.rumble(rb.dur);
 }
-function playHullBreachSequence(){
-  state.phase='breach';
-  AudioEngine.beamStop();
-  const spots = layout.barrels4.map(a=>({x:a.x, y:a.y-layout.barrelH*0.5}));
-  spots.forEach((pos,i)=>{
-    setTimeout(()=>{
-      if(state.phase!=='breach') return;
-      spawnExplosion(pos.x, pos.y);
-      AudioEngine.explosion();
-      state.shake = Math.max(state.shake, 24);
-      state.warnT = 0.5;
-    }, i*450);
-  });
-  setTimeout(()=>{
-    if(state.phase==='breach') gameOver();
-  }, spots.length*450 + 500);
-}
 function gameOver(){
   state.phase='gameover';
   AudioEngine.beamStop();
   document.getElementById('endTitle').textContent='HULL BREACH';
   document.getElementById('endText').textContent = `Structural integrity failed in Sector ${String(state.sector).padStart(2,'0')}. Cargo operations suspended.`;
-  document.getElementById('endOverlay').classList.remove('hidden');
+  const ov=document.getElementById('endOverlay');
+  ov.classList.toggle('adrift', !!state.failure);   // see-through, so the wreckage keeps drifting behind it
+  ov.classList.remove('hidden');
+}
+
+// ---------- Catastrophic failure ----------
+// At 0% the bay comes apart. A last few barrels blow, glowing seams spread across the walls and
+// floor (running through the worst of the scars), then everything splits: the walls and floor break
+// into shards, and the iris, emitters, airlock, button, lever, floor doors, robot arm, barrels, every
+// rock and every alien (the off-screen ones drift in from the edges) float off into the distance,
+// revealing the whole nebula. Up to two aliens offer some reassurance. Then the end screen fades in
+// over the drift; REBOOT SYSTEMS pulls the bay back together before the new shift starts.
+// Each piece is drawn once into its own small canvas when the bay splits, so a frame is just a few
+// dozen image blits. Positions are in 3D around a vanishing point: a piece at depth Z is drawn at
+// 1/(1+Z) of its size, so as Z grows it shrinks and closes in on the vanishing point.
+const FAILURE_SPLIT_AT = 1.1;       // seconds from 0% to the split
+const FAILURE_END_SCREEN_AT = 6;    // seconds after the split
+const FAILURE_REBUILD_DUR = 1.8;
+const ALIEN_REASSURE_MESSAGES=[
+  "Happens all the time out here.",
+  "Don't panic. I'm not panicking.",
+  "Good thing I packed a sweater.",
+  "Look on the bright side. It's very bright.",
+];
+function startHullFailure(){
+  state.phase='breach';
+  AudioEngine.beamStop();
+  state.failure = {t:0, split:false, shards:fractureBay(), pieces:[], flash:0, talkers:[], rebuild:null};
+  // the last barrels standing go up one after another
+  const spots = layout.barrels4.map((a,i)=>({x:a.x, y:a.y-layout.barrelH*0.5, i}))
+    .filter(s=>state.barrels[s.i].status==='ready').slice(0,3);
+  state.failure.blasts = spots.map((s,k)=>({...s, at:k*0.3, done:false}));
+}
+// Break the screen into jagged shards: a jittered grid whose cells share corners and edge points,
+// so the pieces fit together exactly. The interior corner nearest each wall or floor scar is moved
+// onto it, so the bay breaks where it was already damaged.
+function fractureBay(){
+  const cols=clamp(Math.round(W/170),3,8), rows=clamp(Math.round(H/170),4,7);
+  const pts=[];
+  for(let j=0;j<=rows;j++){
+    pts.push([]);
+    for(let i=0;i<=cols;i++){
+      const edgeX = i===0 || i===cols, edgeY = j===0 || j===rows;
+      pts[j].push({x: i/cols*W + (edgeX ? 0 : rand(-0.32,0.32)*W/cols),
+                   y: j/rows*H + (edgeY ? 0 : rand(-0.32,0.32)*H/rows)});
+    }
+  }
+  for(const s of state.scars){
+    if(s.kind==='blast') continue;
+    const p=scarPos(s);
+    let best=null, bd=Infinity;
+    for(let j=1;j<rows;j++) for(let i=1;i<cols;i++){
+      const d=Math.hypot(pts[j][i].x-p.x, pts[j][i].y-p.y);
+      if(d<bd){ bd=d; best=pts[j][i]; }
+    }
+    if(best && bd < Math.min(W/cols, H/rows)*0.6){ best.x=p.x; best.y=p.y; }
+  }
+  // one jagged midpoint per edge, shared by the two shards on either side of it
+  const mids=new Map();
+  const mid=(a,b)=>{
+    const key = a.x<b.x || (a.x===b.x && a.y<b.y) ? [a.x,a.y,b.x,b.y].join() : [b.x,b.y,a.x,a.y].join();
+    if(!mids.has(key)){
+      const onBorder = (a.x===b.x && (a.x===0 || a.x===W)) || (a.y===b.y && (a.y===0 || a.y===H));
+      const dx=b.x-a.x, dy=b.y-a.y, k=onBorder ? 0 : rand(-0.14,0.14), t=rand(0.35,0.65);
+      mids.set(key, {x:a.x+dx*t - dy*k, y:a.y+dy*t + dx*k});
+    }
+    return mids.get(key);
+  };
+  const poly=(corners)=>{
+    const out=[];
+    corners.forEach((c,i)=>{ out.push(c); out.push(mid(c, corners[(i+1)%corners.length])); });
+    return out;
+  };
+  const shards=[];
+  for(let j=0;j<rows;j++) for(let i=0;i<cols;i++){
+    const a=pts[j][i], b=pts[j][i+1], c=pts[j+1][i+1], d=pts[j+1][i];
+    if(Math.random()<0.3){
+      if(Math.random()<0.5){ shards.push(poly([a,b,c])); shards.push(poly([a,c,d])); }
+      else { shards.push(poly([a,b,d])); shards.push(poly([b,c,d])); }
+    } else shards.push(poly([a,b,c,d]));
+  }
+  return shards;
+}
+function polyPath(pts){ ctx.beginPath(); pts.forEach((p,i)=> i ? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y)); ctx.closePath(); }
+// Draw `fn` (in screen coordinates) into a canvas of its own, covering the region (x, y, w, h).
+function makeSprite(x, y, w, h, fn){
+  w=Math.max(1,Math.ceil(w)); h=Math.max(1,Math.ceil(h));
+  const cv=document.createElement('canvas');
+  cv.width=Math.ceil(w*DPR); cv.height=Math.ceil(h*DPR);
+  const o=cv.getContext('2d');
+  o.setTransform(DPR,0,0,DPR,-x*DPR,-y*DPR);
+  const main=ctx; ctx=o;
+  try{ fn(); } finally { ctx=main; }
+  return {cv, w, h, cx:x+w/2, cy:y+h/2};
+}
+function failureVP(){ return {x:W*0.5, y:H*0.42}; }
+function addPiece(f, kind, at, extra){
+  const vp=failureVP(), X=at.x-vp.x, Y=at.y-vp.y, d=Math.hypot(X,Y)||1;
+  const k=clamp(Math.min(W,H)/700, 0.55, 1.2);
+  const sp=rand(70,230)*k, burst=rand(60,200)*k;
+  f.pieces.push(Object.assign({kind, X, Y, Z:0, rot:0, X0:X, Y0:Y,
+    vX:X/d*sp + rand(-25,25)*k, vY:Y/d*sp + rand(-25,25)*k, bX:X/d*burst, bY:Y/d*burst,
+    vZ:rand(0.1,0.35), spin:rand(-0.6,0.6), alpha:1}, extra));
+}
+function splitBay(){
+  const f=state.failure;
+  f.split=true; f.t=0; f.flash=1;
+  AudioEngine.hullFailure();
+  state.shake=Math.max(state.shake, reducedMotion ? 0 : 30);
+  // the whole sky, now that there's nothing in front of it
+  f.sky = makeSprite(0, 0, W, H, drawOpenSpace);
+  // walls and floor, scars and all
+  for(const pts of f.shards){
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    pts.forEach(p=>{ x0=Math.min(x0,p.x); y0=Math.min(y0,p.y); x1=Math.max(x1,p.x); y1=Math.max(y1,p.y); });
+    const s=makeSprite(x0-2, y0-2, x1-x0+4, y1-y0+4, ()=>{
+      ctx.save(); polyPath(pts); ctx.clip();
+      ctx.setTransform(1,0,0,1,0,0);   // copy the background canvas pixel for pixel
+      const m=ctx.canvas; ctx.drawImage(bgCanvas, (x0-2)*DPR, (y0-2)*DPR, m.width, m.height, 0, 0, m.width, m.height);
+      ctx.restore();
+      // broken edges catch the light
+      polyPath(pts);
+      ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=2.5; ctx.stroke();
+      ctx.strokeStyle='rgba(170,185,205,0.35)'; ctx.lineWidth=1; ctx.stroke();
+    });
+    addPiece(f, 'img', {x:s.cx, y:s.cy}, {s, layer:0});
+  }
+  // everything mounted in the bay
+  const add=(x,y,w,h,fn,spin)=>{ const s=makeSprite(x,y,w,h,fn); addPiece(f,'img',{x:s.cx,y:s.cy},{s, layer:1, spin:spin!==undefined?spin:rand(-1,1)*0.8}); };
+  state.aliens.forEach(a=>{ if(a.state==='chute' || a.state==='launching') a.state='adrift'; });   // the airlock floats off empty
+  const {cx,cy,r}=layout.iris, RR=r*1.17+4;
+  add(cx-RR, cy-RR, RR*2, RR*2, ()=>{ drawIrisBlades(cx,cy,r); drawIrisRing(cx,cy,r); }, rand(-0.25,0.25));
+  layout.emitters.forEach(e=>add(e.x-16, e.y-16, 32, 32, ()=>{ ctx.save(); ctx.translate(e.x,e.y); ctx.fillStyle='#242b36'; ctx.beginPath(); ctx.arc(0,0,13,0,TAU); ctx.fill(); ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke(); ctx.fillStyle='#3a4351'; ctx.beginPath(); ctx.arc(0,0,5.5,0,TAU); ctx.fill(); ctx.restore(); }));
+  const c=layout.chute, cb=layout.chuteBtn, F=Math.max(5, c.w*0.07);
+  add(c.x-c.w/2-F-4, cb.y-cb.h/2-4, c.w+F*2+8, (c.y+c.h/2+F+4)-(cb.y-cb.h/2-4), drawChute);
+  const b=layout.redButton;
+  add(b.x-b.r*1.6-3, b.y-b.r*1.6-3, b.r*3.2+6, b.r*3.2+6, drawRedButton);
+  const L=layout.lever;
+  add(L.x-L.h-6, L.y-L.h-6, L.h+6+36, L.h*2+12, drawLever);
+  layout.barrelHoles.concat([layout.armHole]).forEach(h=>add(h.x-h.rx*1.14-3, h.y-h.ry*1.2-3, h.rx*2.28+6, h.ry*2.4+6, ()=>drawFloorHoleRaw(h,0)));
+  const R=layout.barrelR, ry=R*0.42, Hh=layout.barrelH;
+  const barrel=i=>{
+    const st=state.barrels[i].status;
+    if(st!=='ready' && st!=='rising') return;
+    const a=layout.barrels4[i];
+    add(a.x-R-4, a.y-Hh-ry-4, R*2+8, Hh+ry*2+8, ()=>drawBarrel(a, i, true));
+  };
+  barrel(0); barrel(1);
+  // the robot arm, torn out of its opening
+  const h=layout.armHole, Ls=layout.armSeg, steel=['#6b778a','#4a5568','#2b3341'];
+  const sh={x:h.x, y:h.y-layout.armMast}, el={x:sh.x+Ls*0.55, y:sh.y-Ls*0.8}, wr={x:el.x-Ls*0.25, y:el.y-Ls*0.95};
+  add(h.x-R, wr.y-R, el.x-h.x+R*2, h.y-wr.y+R*1.5, ()=>{
+    drawArmBar({x:h.x, y:h.y+R*0.6}, sh, R*0.5, steel);
+    drawArmBar(sh, el, R*0.34, steel); drawArmBar(el, wr, R*0.26, steel);
+    drawArmJoint(sh, R*0.26); drawArmJoint(el, R*0.22); drawArmJoint(wr, R*0.17);
+    ctx.fillStyle='#c98a2d'; roundRectPath(wr.x-R*0.22, wr.y+R*0.1, R*0.44, R*0.12, 2); ctx.fill();
+  });
+  barrel(2); barrel(3);
+  // every rock, live
+  state.rocks.forEach(rk=>{ if(rk.state!=='gone') addPiece(f, 'rock', rk, {rock:rk, scale0:rk.scale, layer:2, spin:rand(-1.5,1.5)}); });
+  // every alien, live; the ones off-screen start just past the edge they're nearest and drift in
+  state.aliens.forEach(a=>{
+    if(a.state==='gone') return;
+    let at={x:a.x, y:a.y}, scale0=a.scale;
+    if(a.walkPhase==='hiding' && a.hidingInBarrel!=null){ const an=layout.barrels4[a.hidingInBarrel]; at={x:an.x, y:an.y-layout.barrelH*0.6}; }
+    else if(a.state==='jammed') at={x:h.x, y:h.y};
+    const on = at.x>-20 && at.x<W+20 && at.y>-20 && at.y<H+20 && !alienIsOffscreen(a);
+    if(!on){
+      const side = at.x < W/2 ? -1 : 1;
+      at = {x: side<0 ? -a.size*1.5 : W+a.size*1.5, y: rand(H*0.15, H*0.85)};
+      scale0 = ALIEN_TRACK1_SCALE;
+    }
+    a.state='adrift'; a.bubbleT=0; a.bubbleAt=null; a.ridingOn=null; a.rider=null; a.carrying=null;
+    addPiece(f, 'alien', at, {alien:a, scale0, layer:3, on, spin:rand(-1.2,1.2)});
+    const p=f.pieces[f.pieces.length-1];
+    if(!on){ const vp=failureVP(); p.vX=(vp.x-at.x)*rand(0.25,0.45); p.vY=(vp.y-at.y)*rand(0.1,0.3); p.bX=p.bY=0; }
+  });
+  // up to two of them, preferably ones that were in the bay, have something to say about it
+  const aliens=f.pieces.filter(p=>p.kind==='alien');
+  const pool=aliens.filter(p=>p.on).sort(()=>Math.random()-0.5).concat(aliens.filter(p=>!p.on).sort(()=>Math.random()-0.5));
+  f.talkers = pool.slice(0,2).map((p,i)=>({p, at: i ? 3.1 : 1.4, said:false,
+    text: i ? choice(ALIEN_REASSURE_MESSAGES) : "I've been through worse."}));
+  state.particles = state.particles.filter(p=>p.type!=='plate');
+  bgCanvas.style.visibility='hidden';
+  document.getElementById('app').classList.add('failed');   // the HUD loses power
+}
+// Full-screen backdrop for after the split: the sector's nebula and stars, no window frame.
+function drawOpenSpace(){
+  const R=Math.hypot(W,H)*0.5, vp=failureVP();
+  const g=ctx.createRadialGradient(vp.x,vp.y,0, vp.x,vp.y,R*1.2);
+  g.addColorStop(0,`hsl(${state.nebulaHue},45%,11%)`); g.addColorStop(1,'#020305');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  state.nebulaBlobs.forEach(b=>{
+    const bx=vp.x+Math.cos(b.a)*R*b.r, by=vp.y+Math.sin(b.a)*R*b.r, rad=R*b.size*1.1;
+    const ng=ctx.createRadialGradient(bx,by,0, bx,by,rad);
+    ng.addColorStop(0, `hsla(${b.hue},70%,60%,${b.alpha*1.2})`);
+    ng.addColorStop(1, `hsla(${b.hue},70%,50%,0)`);
+    ctx.fillStyle=ng; ctx.beginPath(); ctx.arc(bx,by,rad,0,TAU); ctx.fill();
+  });
+  ctx.fillStyle='#dfeaff';
+  const n=Math.round(W*H/2600);
+  for(let i=0;i<n;i++){
+    ctx.globalAlpha=rand(0.3,1);
+    ctx.beginPath(); ctx.arc(rand(0,W), rand(0,H), rand(0.5,1.6), 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+function updateFailure(dt){
+  const f=state.failure;
+  f.t+=dt;
+  f.flash=Math.max(0, f.flash-dt*1.6);
+  if(!f.split){
+    for(const b of f.blasts){
+      if(b.done || f.t<b.at) continue;
+      b.done=true;
+      spawnExplosion(b.x, b.y); spawnBarrelDebris(b.x, b.y);
+      state.barrels[b.i].status='destroyed'; state.barrels[b.i].destroyT=99;
+      AudioEngine.explosion();
+      state.shake=Math.max(state.shake, reducedMotion ? 0 : 22);
+      state.warnT=0.5;
+    }
+    if(!reducedMotion) state.shake = Math.max(state.shake, 4*clamp(f.t/FAILURE_SPLIT_AT,0,1));
+    if(f.t>=FAILURE_SPLIT_AT) splitBay();
+    return false;   // the bay still updates as normal until it splits
+  }
+  if(f.rebuild){
+    const rb=f.rebuild;
+    rb.t+=dt;
+    const u=clamp(rb.t/FAILURE_REBUILD_DUR,0,1), e=u<0.5 ? 4*u*u*u : 1-Math.pow(-2*u+2,3)/2;
+    for(const p of f.pieces){
+      if(p.kind!=='img'){ p.alpha=Math.max(0, p.alpha-dt*2.5); continue; }
+      p.X=lerp(p.from.X, p.X0, e); p.Y=lerp(p.from.Y, p.Y0, e); p.Z=lerp(p.from.Z, 0, e); p.rot=lerp(p.from.rot, 0, e);
+    }
+    if(u>=1) rebootShift();
+    return true;
+  }
+  const decay=Math.exp(-dt*4);
+  for(const p of f.pieces){
+    p.X += (p.vX+p.bX)*dt; p.Y += (p.vY+p.bY)*dt;
+    p.bX*=decay; p.bY*=decay;
+    p.Z += p.vZ*dt; p.rot += p.spin*dt;
+  }
+  for(const tk of f.talkers){
+    if(!tk.said && f.t>=tk.at){ tk.said=true; tk.p.alien.message=tk.text; tk.p.alien.bubbleT=3.4; }
+    const a=tk.p.alien;
+    if(a.bubbleT>0) a.bubbleT=Math.max(0, a.bubbleT-dt);
+  }
+  if(state.phase==='breach' && f.t>=FAILURE_END_SCREEN_AT) gameOver();
+  return true;
+}
+// Glowing seams spreading across the bay just before it splits.
+function drawFailureSeams(){
+  const f=state.failure, u=clamp((f.t-0.2)/(FAILURE_SPLIT_AT-0.2), 0, 1);
+  if(u<=0) return;
+  ctx.save();
+  ctx.lineJoin='round';
+  const flicker=0.75+0.25*Math.sin(state.t*40);
+  for(const pts of f.shards){
+    polyPath(pts);
+    ctx.strokeStyle=`rgba(255,120,50,${0.25*u*flicker})`; ctx.lineWidth=7*u; ctx.stroke();
+    ctx.strokeStyle=`rgba(255,215,160,${0.9*u*flicker})`; ctx.lineWidth=1.5; ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawFailure(){
+  const f=state.failure, vp=failureVP();
+  ctx.drawImage(f.sky.cv, 0, 0, W, H);
+  const order=f.pieces.slice().sort((a,b)=> (b.Z-b.layer*0.02) - (a.Z-a.layer*0.02));
+  for(const p of order){
+    if(p.alpha<=0) continue;
+    const s=1/(1+p.Z), x=vp.x+p.X*s, y=vp.y+p.Y*s;
+    if(p.kind==='img'){
+      ctx.save();
+      ctx.translate(x,y); ctx.rotate(p.rot); ctx.scale(s,s);
+      ctx.drawImage(p.s.cv, -p.s.w/2, -p.s.h/2, p.s.w, p.s.h);
+      ctx.restore();
+    } else {
+      const o = p.kind==='rock' ? p.rock : p.alien;
+      o.x=x; o.y=y; o.scale=p.scale0*s; o.rot=p.rot; o.opacity=p.alpha;
+      if(p.kind==='rock') drawRockList([o]); else drawAlienList([o]);
+    }
+  }
+  drawParticles();
+  for(const tk of f.talkers){
+    const a=tk.p.alien;
+    if(a.bubbleT<=0 || tk.p.alpha<=0) continue;
+    ctx.save();
+    ctx.globalAlpha = a.bubbleT>0.6 ? 1 : a.bubbleT/0.6;
+    drawSpeechBubble(a.x, a.y - a.size*a.scale - 10, a.message);
+    ctx.restore();
+  }
+  if(f.flash>0){ ctx.fillStyle=`rgba(255,240,225,${f.flash*f.flash*0.85})`; ctx.fillRect(0,0,W,H); }
+}
+function startRebuild(){
+  const f=state.failure;
+  f.rebuild={t:0};
+  f.talkers.forEach(tk=>{ tk.p.alien.bubbleT=0; });
+  for(const p of f.pieces) p.from={X:p.X, Y:p.Y, Z:p.Z, rot:p.rot};
+  AudioEngine.rebuild();
 }
 
 function spawnExplosion(x,y){
@@ -2787,6 +3116,15 @@ function update(){
   let dt=(now-lastT)/1000; lastT=now;
   dt=Math.min(dt,0.05);
   state.t+=dt;
+  state.rebootFlash = Math.max(0, (state.rebootFlash||0) - dt*1.8);
+  if(state.failure && updateFailure(dt)){
+    // the bay has split: only the wreckage moves now
+    updateParticles(dt);
+    state.shake = Math.max(0, state.shake - dt*60);
+    state.warnT = Math.max(0, state.warnT-dt);
+    document.getElementById('warnFlash').classList.toggle('show', state.warnT>0);
+    return;
+  }
 
   state.irisOpen = lerp(state.irisOpen, state.irisTarget, Math.min(1, dt*2.4));
 
@@ -3130,6 +3468,14 @@ function update(){
     }
   });
 
+  updateParticles(dt);
+  state.shake = Math.max(0, state.shake - dt*60);
+  state.warnT = Math.max(0, state.warnT-dt);
+  document.getElementById('warnFlash').classList.toggle('show', state.warnT>0);
+
+  updateToolbar();
+}
+function updateParticles(dt){
   for(const p of state.particles){
     p.life += dt;
     if(p.type==='shard'){
@@ -3145,12 +3491,6 @@ function update(){
     }
   }
   state.particles = state.particles.filter(p=>p.life<p.maxLife);
-
-  state.shake = Math.max(0, state.shake - dt*60);
-  state.warnT = Math.max(0, state.warnT-dt);
-  document.getElementById('warnFlash').classList.toggle('show', state.warnT>0);
-
-  updateToolbar();
 }
 
 function updateToolbar(){
@@ -3366,6 +3706,7 @@ function draw(){
     stage.dataset.shaking='1';
   } else if(stage.dataset.shaking){ stage.style.transform=''; delete stage.dataset.shaking; }
 
+  if(state.failure && state.failure.split){ drawFailure(); ctx.restore(); return; }
   // Walls and floor are on the background canvas (see resize). The floor used to be painted over the
   // bottom of the iris; now the iris is clipped at the floor line instead.
   ctx.save();
@@ -3384,6 +3725,8 @@ function draw(){
   drawRockList(state.rocks.filter(r=>r.state==='carried'));
   drawParticles();
   drawAlienBubbles();
+  if(state.failure) drawFailureSeams();
+  if(state.rebootFlash>0){ ctx.fillStyle=`rgba(200,250,255,${state.rebootFlash*0.8})`; ctx.fillRect(0,0,W,H); }
 
   ctx.restore();
 }
@@ -3440,7 +3783,10 @@ function drawIrisWindow(){
   const RR=r*1.17+4;
   paintLayer(layerIris, layoutGen+'|'+DPR+'|'+state.irisOpen.toFixed(3), cx-RR, cy-RR, RR*2, RR*2, ()=>{
     drawIrisBlades(cx,cy,r);
-
+    drawIrisRing(cx,cy,r);
+  });
+}
+function drawIrisRing(cx,cy,r){
     const ringW = r*0.14;
     const rg=ctx.createLinearGradient(cx-r,cy-r,cx+r,cy+r);
     rg.addColorStop(0,'#4a5568'); rg.addColorStop(0.5,'#232a35'); rg.addColorStop(1,'#3a4553');
@@ -3457,7 +3803,6 @@ function drawIrisWindow(){
       ctx.fillStyle='#151b23';
       ctx.beginPath(); ctx.arc(rx,ry,2.4,0,TAU); ctx.fill();
     }
-  });
 }
 
 function drawIrisBlades(cx,cy,r){
@@ -4512,6 +4857,17 @@ function takeAutoResumeFlag(){
 document.getElementById('newShiftBtn').addEventListener('click', ()=>beginShift(false));
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
+  // After a catastrophic failure the bay pulls itself back together first (see updateFailure).
+  if(state.failure && state.failure.split){ if(!state.failure.rebuild) startRebuild(); return; }
+  rebootShift();
+});
+function rebootShift(){
+  if(state.failure){
+    state.failure=null;
+    state.rebootFlash=1;
+    bgCanvas.style.visibility='';
+    document.getElementById('app').classList.remove('failed');
+  }
   state.hull=100; renderHull();
   state.scars=[]; paintBackground();
   state.particles=[];
@@ -4523,7 +4879,7 @@ document.getElementById('restartBtn').addEventListener('click', ()=>{
   state.irisOpen=1; state.irisTarget=1;
   state.phase='playing';
   startLevel(1);
-});
+}
 const audioToggle=document.getElementById('audioToggle');
 let audioOn=true;
 audioToggle.addEventListener('click', ()=>{
