@@ -887,13 +887,21 @@ const ALIEN_TRACK1_SCALE = 1.15; // near-camera size while on the front track
 const ALIEN_TRACK2_SCALE = 0.42; // scaled down for distance while on the far track
 const ALIEN_TRACK_GAP_SECONDS = 30; // time spent off-screen between track 1 and track 2
 const ALIEN_TRACK_EDGE_MARGIN = 50; // extra px past the window edge before an alien is considered off-screen
-const ALIEN_GARBAGE_MESSAGES=[
-  "Who left this garbage here?",
-  "Ugh, watch your step, people.",
-  "This is NOT recycling.",
-  "Rude. Absolutely rude.",
-  "Not on my walk, cargo handler.",
+// Walking past a resting rock on track 1, an alien sometimes picks it up, balances it on its
+// head and carries it off the edge of the screen, where it unloads. Otherwise it walks past.
+const ALIEN_CARRY_CHANCE = 0.25;
+const ALIEN_CARRY_LIFT_SECONDS = 0.45;
+const ALIEN_CARRY_MESSAGES=[
+  "I know where this belongs.",
+  "Leave it to me. I know a place.",
+  "This goes over here. Trust me.",
+  "Ah, a stray! I'll take it home.",
+  "Don't worry, I've got this one.",
 ];
+// Where a carried rock sits: balanced on top of its carrier's helmet.
+function carriedRockSpot(r, a){
+  return {x:a.x, y:a.y - a.size*a.scale - r.size*r.scale*0.9};
+}
 const ALIEN_FIXIT_MESSAGES=[
   "I fixed your gorblesnarker!",
   "I made a door!",
@@ -1118,7 +1126,7 @@ function createAlien(skipAvatarLoad){
     face: makeAlienFace(), // kept populated so ALIEN_FACE_MODE can be flipped back at any time
     avatarImg:null, avatarLoaded:false, avatarFailed:false,
     message:null, bubbleT:0,
-    walkPhase:null, track:1, waitTimer:0, interactCooldown:0,
+    walkPhase:null, track:1, waitTimer:0,
     greeted:false, fixitMode:false, buttonRolled:false, walksReverse:false,
     hidingInBarrel:null, hideJumpOut:false,
     climbRolled:false, climbDir:0, climbAngle:0, climbSweep:0, climbProgress:0, fallToTrack2:false,
@@ -1717,7 +1725,6 @@ function duplicateAlien(parent){
   clone.walksReverse = Math.random()<0.5;
   clone.greeted = true;
   clone.state = 'settled';
-  clone.interactCooldown = 0;
   clone.buttonRolled = false;
   clone.leverRolled = false;
   clone.climbRolled = false;
@@ -2422,6 +2429,22 @@ function update(){
     } else if(r.state==='settled'){
       r.x = r.baseX;
       r.y = r.baseY + Math.sin(state.t*1.4+r.phase)*1.5;
+    } else if(r.state==='carried'){
+      const a = r.carrier;
+      if(!a || a.carrying!==r || a.state!=='settled' || a.walkPhase!=='track1'){
+        // Its carrier was grabbed, beamed up or otherwise interrupted: the rock drops where it is.
+        if(a && a.carrying===r) a.carrying = null;
+        r.carrier = null;
+        r.state = 'falling'; r.fvx = 0; r.fvy = 0;
+      } else {
+        r.liftT = Math.min(1, r.liftT + dt/ALIEN_CARRY_LIFT_SECONDS);
+        const spot = carriedRockSpot(r, a), u = r.liftT;
+        const e = u*u*(3-2*u);
+        r.x = lerp(r.liftFrom.x, spot.x, e);
+        r.y = lerp(r.liftFrom.y, spot.y, e) - Math.sin(u*Math.PI)*a.size*a.scale*0.6;
+        // balancing: a slow wobble that tips toward the direction of travel
+        r.rot += Math.sin(state.t*2.1 + r.phase)*dt*0.6;
+      }
     } else if(r.state==='ejected'){
       r.x += r.evx*dt; r.y += r.evy*dt;
       r.evx *= 1.01; r.evy = r.evy*1.01 - 26*dt;
@@ -2473,7 +2496,7 @@ function update(){
           a.track=1; a.targetScale=ALIEN_TRACK1_SCALE;
           const off = a.x < -ALIEN_TRACK_EDGE_MARGIN || a.x > W + ALIEN_TRACK_EDGE_MARGIN;
           if(off){ a.walkPhase='gap'; a.waitTimer=ALIEN_TRACK_GAP_SECONDS; }
-          else { a.walkPhase='track1'; a.interactCooldown=0; }
+          else a.walkPhase='track1';
         }
       } else {
       const res = stepFallingBody(a, dt);
@@ -2489,7 +2512,6 @@ function update(){
           a.walkPhase = 'track1';
           a.track = 1;
           a.targetScale = ALIEN_TRACK1_SCALE;
-          a.interactCooldown = 0;
         } else if(a.hideJumpOut){
           a.hideJumpOut = false;
           a.message = choice(ALIEN_HIDE_MESSAGES);
@@ -2497,7 +2519,6 @@ function update(){
           a.walkPhase = 'track1';
           a.track = 1;
           a.targetScale = ALIEN_TRACK1_SCALE;
-          a.interactCooldown = 0;
         } else {
           if(a.tumbled){
             a.tumbled = false; // already shouted on the way down
@@ -2513,7 +2534,6 @@ function update(){
           a.walkPhase = 'track1';
           a.track = 1;
           a.targetScale = ALIEN_TRACK1_SCALE;
-          a.interactCooldown = 0;
         }
       }
       }
@@ -2527,27 +2547,22 @@ function update(){
         a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
         maybeTriggerAbduct(a, prevX);
 
-        if(a.interactCooldown>0) a.interactCooldown -= dt;
-        if(a.interactCooldown<=0){
-          const nearRock = state.rocks.find(rk=> rk.state==='settled' &&
+        if(a.carrying && !state.rocks.includes(a.carrying)) a.carrying = null;   // cleared by a sector reset
+        // Each rock it passes gets one roll; a tower's base already has a rider on its head.
+        if(!a.carrying && !a.rider){
+          const rolled = a.rocksRolled || (a.rocksRolled = new WeakSet());
+          const nearRock = state.rocks.find(rk=> rk.state==='settled' && !rolled.has(rk) &&
             Math.abs(rk.x-a.x) < (a.size*a.scale + rk.size*rk.scale)*0.85);
           if(nearRock){
-            a.message = choice(ALIEN_GARBAGE_MESSAGES);
-            a.bubbleT = 3;
-            a.interactCooldown = 2;
-            const gvx=rand(-70,70), gvy=-rand(150,230);
-            AudioEngine.eject();
-            spawnEjectSpark(nearRock.x, nearRock.y-8);
-            if(state.irisOpen>0.5){
-              const rx=nearRock.x, ry=nearRock.y;
-              removeRock(nearRock);
-              spawnEjectTrail(rx, ry-8, gvx, gvy, nearRock.pal);
-            } else {
-              // Iris closed — the rock has nowhere to go. Keep it alive and just launch it
-              // with a much harder kick, so it arcs back down and lands, still fully sortable.
-              nearRock.state = 'falling';
-              nearRock.fvx = gvx;
-              nearRock.fvy = gvy*2;
+            rolled.add(nearRock);
+            if(Math.random() < ALIEN_CARRY_CHANCE){
+              a.carrying = nearRock;
+              nearRock.state = 'carried';
+              nearRock.carrier = a;
+              nearRock.liftT = 0;
+              nearRock.liftFrom = {x:nearRock.x, y:nearRock.y};
+              a.message = choice(ALIEN_CARRY_MESSAGES);
+              a.bubbleT = 3.5;
             }
           }
         }
@@ -2556,6 +2571,7 @@ function update(){
           ? (a.baseX + a.size*a.scale < -ALIEN_TRACK_EDGE_MARGIN)
           : (a.baseX - a.size*a.scale > W + ALIEN_TRACK_EDGE_MARGIN);
         if(track1Exited){
+          if(a.carrying){ a.carrying.state='gone'; a.carrying=null; }   // carried off the edge: unloaded
           a.walkPhase='gap';
           a.waitTimer = ALIEN_TRACK_GAP_SECONDS;
         }
@@ -2904,7 +2920,8 @@ function drawAlienBubbles(){
       const op = a.bubbleT>0.6 ? 1 : a.bubbleT/0.6;
       ctx.save();
       ctx.globalAlpha=op;
-      const at = a.bubbleAt || {x:a.x, y:a.y - a.size*a.scale - 12};
+      const lift = a.carrying ? a.carrying.size*a.carrying.scale*1.5 : 0;
+      const at = a.bubbleAt || {x:a.x, y:a.y - a.size*a.scale - 12 - lift};
       drawSpeechBubble(at.x, at.y, a.message);
       ctx.restore();
     }
@@ -2936,8 +2953,9 @@ function draw(){
   drawAlienList(state.aliens.filter(isFarTrackAlien));
   drawBarrels();
   if(state.held) drawBeams();
-  drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone'));
+  drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone' && r.state!=='carried'));
   drawAlienList(state.aliens.filter(a=> !OFF_FLOOR_ALIEN_STATES.has(a.state) && !isArmLayerAlien(a) && a.walkPhase!=='hiding' && !isFarTrackAlien(a)));
+  drawRockList(state.rocks.filter(r=>r.state==='carried'));
   drawParticles();
   drawAlienBubbles();
 
@@ -3836,7 +3854,7 @@ const SaveGame = (()=>{
     if(str.startsWith('gz1:')) return JSON.parse(new TextDecoder().decode(await pipe(fromB64(str.slice(4)), new DecompressionStream('gzip'))));
     throw new Error('unknown save format');
   }
-  const ALIEN_SKIP = new Set(['avatarImg','ridingOn','rider','bubbleAt']);
+  const ALIEN_SKIP = new Set(['avatarImg','ridingOn','rider','bubbleAt','carrying','rocksRolled']);
   function snapshot(){
     const aliens=[];
     for(const a of state.aliens){
