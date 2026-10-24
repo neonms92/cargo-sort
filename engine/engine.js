@@ -839,13 +839,6 @@ const ALIEN_GARBAGE_MESSAGES=[
   "Rude. Absolutely rude.",
   "Not on my walk, cargo handler.",
 ];
-const ALIEN_FAREWELL_MESSAGES=[
-  "Nice knowing ya!",
-  "I don't blame you!",
-  "No hard feelings!",
-  "Worth a shot!",
-  "Catch you on the flip side!",
-];
 const ALIEN_FIXIT_MESSAGES=[
   "I fixed your gorblesnarker!",
   "I made a door!",
@@ -1444,23 +1437,9 @@ function releaseRock(r){
   r.state='falling';
   r.fvx = v.x; r.fvy = v.y;
 }
+// Aliens can't be thrown out through the iris: let go over it and they just fall like anywhere else.
 function releaseAlien(a){
   a.walksReverse = Math.random()<0.5;
-  const iris=layout.iris;
-  const distIris = Math.hypot(a.x-iris.cx, a.y-iris.cy);
-  if(distIris < iris.r*0.92 && state.irisOpen>0.75 && a.y < layout.floorTop){
-    a.state='ejected';
-    const v = a.vel || {x:0,y:-4};
-    const mag = Math.hypot(v.x,v.y)||1;
-    const speed = clamp(mag*2.2, 90, 420);
-    a.evx = (a.x-iris.cx)/ (Math.hypot(a.x-iris.cx,a.y-iris.cy)||1) * speed*0.3 + (v.x/mag)*speed;
-    a.evy = (v.y/mag)*speed - 40;
-    a.opacity=1;
-    a.message = choice(ALIEN_FAREWELL_MESSAGES);
-    a.bubbleT = 2.5;
-    AudioEngine.eject();
-    return;
-  }
   const v = throwVelocity();
   a.state='falling';
   a.fvx = v.x; a.fvy = v.y;
