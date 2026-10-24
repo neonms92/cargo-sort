@@ -1,5 +1,5 @@
 // Cargo Bay — shared game engine.
-// Each matching system is its own page (index.html = oxygen fractions, words/ = word types). A page
+// Each matching system is its own page (index.html = oxygen fractions, words/ = word types, rhymes/, conjugation/ = Spanish verbs). A page
 // defines window.CARGO_MODE, then loads this file, which injects the styles and HUD markup and runs
 // the game. Everything here is common, so engine updates reach every mode at once.
 //
@@ -223,6 +223,7 @@ const MODES = [
   {id:'o2',    name:'OXYGEN',     path:''},
   {id:'words', name:'WORD TYPES', path:'words/'},
   {id:'rhymes', name:'RHYMES',     path:'rhymes/'},
+  {id:'conjugation', name:'SPANISH VERBS', path:'conjugation/'},
 ];
 // Snapshot of this page's own markup, taken before the engine touches the DOM; the live-update
 // check compares it (plus this file's text) against freshly fetched copies (see bottom of file).
