@@ -65,12 +65,7 @@ window.CARGO_MODE = (function(){
   return {
     id: 'words',
     title: 'WORD SORT',
-    intro: "The rocks drifting past the cargo bay window are tagged with words today. Tractor-grab each one, read its word off the scanner, and drop it into the barrel for that kind of word — five of a kind seals the barrel.",
-    rules: {
-      READ:  "Each rock carries a word. Sort by word type: noun, verb, adjective, adverb — more types join in later sectors.",
-      SORT:  "The first word in an empty barrel decides its word type. The barrel shows that first word — remember what kind it was.",
-      MATCH: "A different word type in an armed barrel triggers a hull-damaging blowout.",
-    },
+    intro: "Sort the words by their type.",
     scanLabel: 'SPECIMEN TAG',
     pickValue(sector){
       const types = Object.keys(TYPES).filter(k=>sector>=TYPES[k].from);

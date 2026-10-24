@@ -5,8 +5,8 @@
 //
 // window.CARGO_MODE:
 //   id                    save slot / protocol id (also add the mode to MODES below)
-//   title, intro          start screen: "CARGO BAY: <title> PROTOCOL" and the paragraph under it
-//   rules                 {READ, SORT, MATCH, EJECT, ...}: overrides/additions to the default rule lines
+//   title, intro          start screen: "CARGO BAY: <title> PROTOCOL" and the one line under it,
+//                         "Sort the <things> by their <property>." (everything else is left to discover)
 //   scanLabel             caption over the scanner readout
 //   pickValue(sector)     a random value for this sector: any plain object with a `key`
 //   makeItem(value, sector, labels)  how one rock shows that value: {rep, text, glyph?}
@@ -165,8 +165,9 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 .overlay{
   position:absolute; inset:0; z-index:40;
   background:radial-gradient(ellipse at 50% 30%, #101a26 0%, #04060a 75%);
-  display:flex; align-items:center; justify-content:center; flex-direction:column;
+  display:flex; align-items:center; justify-content:safe center; flex-direction:column;
   text-align:center; padding:20px;
+  overflow-y:auto; touch-action:pan-y;   /* short phone screens: scroll to reach the button */
 }
 .overlay.hidden{display:none;}
 .overlay h1{
@@ -181,11 +182,7 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 .overlay p{
   max-width:560px; color:var(--text-mid); font-size:16px; line-height:1.55; margin:0 0 8px;
 }
-.overlay .rule{
-  display:flex; align-items:center; gap:10px; color:var(--text-mid); font-size:15px; margin:4px 0;
-}
-.overlay .rule b{color:var(--cyan); font-family:var(--font-display); font-size:11px; letter-spacing:1.5px; min-width:96px; text-align:left;}
-#rulesBox{margin:18px 0 26px; text-align:left; max-width:680px;}
+#intro{margin:4px 0 30px; font-size:18px;}
 .bigBtn{
   font-family:var(--font-display); font-weight:700; letter-spacing:3px; font-size:15px;
   color:#04121a; background:linear-gradient(180deg, var(--cyan), #2fb5a8);
@@ -240,12 +237,6 @@ function injectShell(){
   const style = document.createElement('style');
   style.textContent = ENGINE_CSS;
   document.head.appendChild(style);
-  const rules = Object.assign({
-    SORT:  "The first rock in an empty barrel sets what that barrel takes.",
-    MATCH: "A rock that doesn't match an armed barrel triggers a hull-damaging blowout.",
-    EJECT: "Tap a barrel to jettison its contents. Drag a rock through the open iris to jettison just that rock.",
-  }, MODE.rules);
-  const order = ['READ','SORT','MATCH','EJECT'].filter(k=>rules[k]).concat(Object.keys(rules).filter(k=>!['READ','SORT','MATCH','EJECT'].includes(k)));
   const protocols = MODES.map(m => m.id===MODE.id
     ? `<span class="cur">${esc(m.name)}</span>`
     : `<a href="${esc(SITE_ROOT + m.path)}">${esc(m.name)}</a>`).join('<span class="sep">·</span>');
@@ -289,10 +280,7 @@ function injectShell(){
   <div id="startOverlay" class="overlay">
     <div class="ship">S.S. KESTREL-9 — CARGO DIVISION</div>
     <h1>CARGO BAY: <span class="accent">${esc(MODE.title)}</span> PROTOCOL</h1>
-    <p>${esc(MODE.intro)}</p>
-    <div id="rulesBox">
-${order.map(k=>`      <div class="rule"><b>${esc(k)}</b> ${esc(rules[k])}</div>`).join('\n')}
-    </div>
+    <p id="intro">${esc(MODE.intro)}</p>
     <button class="bigBtn" id="startBtn">BEGIN SHIFT</button>
     <button class="linkBtn hidden" id="newShiftBtn">START A NEW SHIFT INSTEAD</button>
     <div id="protocolSwitch"><span class="lbl">PROTOCOL</span>${protocols}</div>
@@ -480,7 +468,47 @@ const AudioEngine = (function(){
     osc.start(now); osc.stop(now+dur+0.02);
   }
 
-  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo,
+  // Crackle of static plus a sagging "bwong" as the iris force field bounces something back.
+  function forceField(){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource();
+    src.buffer=noiseBuffer;
+    const filt=ctx.createBiquadFilter(); filt.type='bandpass'; filt.frequency.value=2600; filt.Q.value=0.8;
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    for(let i=0;i<8;i++) g.gain.setValueAtTime(i%2 ? 0.02 : 0.14*(1-i/8), now+i*0.045);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+0.42);
+    src.connect(filt); filt.connect(g); g.connect(master);
+    src.start(now); src.stop(now+0.45);
+    const osc=ctx.createOscillator();
+    osc.type='triangle'; osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(140, now+0.3);
+    const g2=ctx.createGain();
+    g2.gain.setValueAtTime(0.08, now);
+    g2.gain.exponentialRampToValueAtTime(0.0001, now+0.32);
+    osc.connect(g2); g2.connect(master);
+    osc.start(now); osc.stop(now+0.34);
+  }
+
+  // Airlock cycling: a rush of air that drops away as the outer hatch opens.
+  function airlock(){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource();
+    src.buffer=noiseBuffer;
+    const filt=ctx.createBiquadFilter(); filt.type='lowpass';
+    filt.frequency.setValueAtTime(4000, now);
+    filt.frequency.exponentialRampToValueAtTime(200, now+0.9);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.3, now+0.06);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+1.0);
+    src.connect(filt); filt.connect(g); g.connect(master);
+    src.start(now); src.stop(now+1.05);
+  }
+
+  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock,
           get running(){return !!ctx;}};
 })();
 
@@ -595,6 +623,27 @@ function computeLayout(){
     maxReach = Math.max(maxReach, Math.hypot(w.x-sh.x, w.y-sh.y));
   }
   layout.armSeg = maxReach*0.58;
+
+  // Airlock chute: a glass box set into the left wall, between the HUD and the walkway, with its
+  // LAUNCH button under it (or beside it where the wall is too short, e.g. landscape phones).
+  const hud = document.getElementById('hullPanel');
+  const roomTop = (hud ? hud.getBoundingClientRect().bottom : 70) + 12;
+  const rb = layout.redButton;
+  const roomBottom = Math.min(layout.floorTop - 30, rb.y - rb.r*1.6 - 8);
+  const roomL = 10, roomR = cx - irisR*1.2 - 10;
+  const roomW = roomR-roomL, roomH = roomBottom-roomTop;
+  const BOX_MAX = 104, ASPECT = 1.2, BTN_H = 30, BTN_SIDE_W = 60, GAP = 8;
+  const wBelow = Math.min(roomW, BOX_MAX, (roomH - BTN_H - GAP)/ASPECT);
+  const wSide = Math.min(roomW - BTN_SIDE_W - GAP, BOX_MAX, roomH/ASPECT);
+  const side = wSide > wBelow*1.15;
+  const bw = Math.max(40, side ? wSide : wBelow), bh = bw*ASPECT;
+  const groupW = side ? bw + GAP + BTN_SIDE_W : bw;
+  const gx = (roomL+roomR)/2 - groupW/2;
+  const boxX = gx + bw/2, boxY = roomBottom - (side ? 0 : BTN_H + GAP) - bh/2;
+  layout.chute = {x:boxX, y:boxY, w:bw, h:bh};
+  layout.chuteBtn = side
+    ? {x:gx + bw + GAP + BTN_SIDE_W/2, y:boxY + bh/2 - BTN_H/2, w:BTN_SIDE_W, h:BTN_H}
+    : {x:boxX, y:roomBottom - BTN_H/2, w:bw, h:BTN_H};
 }
 // Where the wrist sits when the pincers are clamped on the lid of a barrel standing at `anchor`.
 function armGrabWrist(anchor){
@@ -621,6 +670,10 @@ const state={
   alienSpawnedThisSector:false,
   alienCloneCounters:{},
   leverDown:false,
+  // Airlock chute (its occupant is the alien whose state is 'chute' or 'launching').
+  chute:{flash:0, hatch:0, hatchT:0, press:0},
+  // Static flash over the iris window when an alien is bounced off it.
+  forceField:{t:0, x:0, y:0},
   particles:[],
   spawnTimer:0,
   held:null,
@@ -1231,7 +1284,7 @@ function hitRock(pos){
 }
 function hitAlien(pos){
   // Thrown aliens can be caught mid-air, but not ones on a scripted fall (booted by the arm, shaken off the ring).
-  const candidates = state.aliens.filter(a=> (a.state==='floating' && state.irisOpen>0.5) || a.state==='settled' ||
+  const candidates = state.aliens.filter(a=> (a.state==='floating' && state.irisOpen>0.5) || a.state==='settled' || a.state==='chute' ||
     (a.state==='falling' && !a.kicked && !a.fallToTrack2));
   candidates.sort((a,b)=> b.scale - a.scale);
   for(const a of candidates){
@@ -1254,6 +1307,12 @@ function onDown(e){
   if(state.held) return; // already dragging a rock — ignore extra pointer/touch events
   AudioEngine.init();
   const pos=localPos(e);
+  if(hitChuteButton(pos)){
+    e.preventDefault();
+    launchChute();
+    state.pointer.x=pos.x; state.pointer.y=pos.y; state.pointer.active=true;
+    return;
+  }
   const r=hitRock(pos);
   if(r){
     e.preventDefault();
@@ -1270,6 +1329,7 @@ function onDown(e){
   if(a){
     e.preventDefault();
     breakStackAt(a); // everyone above tumbles off; anyone below keeps walking
+    if(a.state==='chute'){ a.message=choice(ALIEN_CHUTE_RESCUE_MESSAGES); a.bubbleT=2.5; a.tumbled=true; }
     state.held=a;
     a.state='held';
     state.dragLast={x:pos.x,y:pos.y};
@@ -1438,12 +1498,180 @@ function releaseRock(r){
   r.state='falling';
   r.fvx = v.x; r.fvy = v.y;
 }
-// Aliens can't be thrown out through the iris: let go over it and they just fall like anywhere else.
 function releaseAlien(a){
   a.walksReverse = Math.random()<0.5;
+  if(!chuteOccupant() && hitChute(a)){ putAlienInChute(a); return; }
+  const iris=layout.iris;
+  if(Math.hypot(a.x-iris.cx, a.y-iris.cy) < iris.r*0.92 && state.irisOpen>0.75 && a.y < layout.floorTop){
+    forceFieldRebound(a);
+    return;
+  }
   const v = throwVelocity();
   a.state='falling';
   a.fvx = v.x; a.fvy = v.y;
+}
+
+// ---- Iris force field ----
+// Aliens can't be thrown out through the iris: a staticky field flashes over the window and
+// bounces them gently back into the bay, sideways, away from the middle of the window.
+const FORCE_FIELD_DUR = 0.7;
+const ALIEN_FORCEFIELD_MESSAGES=[
+  "Ow!",
+  "That tickles!",
+  "Bzzzt! Hey!",
+  "Ooh, staticky!",
+  "My antennae are all fuzzy now!",
+  "Do it again!",
+  "Rude!",
+];
+function forceFieldRebound(a){
+  const iris=layout.iris;
+  throwVelocity(); // discard the throw: the field decides where it goes
+  state.forceField = {t:FORCE_FIELD_DUR, x:a.x, y:a.y};
+  const side = Math.sign(a.x-iris.cx) || choice([-1,1]);
+  a.state='falling';
+  a.fvx = side*Math.min(W*rand(0.18,0.28), 260);
+  a.fvy = -rand(140,200);
+  a.tumbled = true; // it's already said its piece; no greeting when it lands
+  a.message = choice(ALIEN_FORCEFIELD_MESSAGES);
+  a.bubbleT = 2.5;
+  spawnEjectSpark(a.x, a.y);
+  AudioEngine.forceField();
+}
+
+// ---- Airlock chute ----
+// The only way to really get rid of an alien: drop it into the glass box on the left wall, then
+// press LAUNCH. It's sucked out through the outer hatch and drifts past the iris window, waving
+// goodbye. Until launch it can be grabbed back out.
+const CHUTE_SUCK_DUR = 0.45;     // shrinking out through the outer hatch
+const CHUTE_HATCH_DUR = 1.2;     // outer hatch stays open this long after launch
+const CHUTE_FLIGHT_DUR = 3.4;    // drifting across the iris window
+const ALIEN_CHUTE_ENTER_MESSAGES=[
+  "Hey! What's this?",
+  "Is this a sauna?",
+  "I don't like where this is going.",
+  "Cozy. Suspiciously cozy.",
+  "Let's talk about this!",
+  "I want to speak to your captain!",
+  "Is this the VIP lounge?",
+];
+const ALIEN_CHUTE_WAIT_MESSAGES=[
+  "Hello? Anybody?",
+  "*knock knock*",
+  "I can see you, you know.",
+  "I'll be good, I promise!",
+  "It's getting stuffy in here.",
+  "What's that button do?",
+  "Don't press anything!",
+];
+const ALIEN_CHUTE_RESCUE_MESSAGES=[
+  "Freedom!",
+  "I knew you'd come around!",
+  "Phew!",
+  "Was it something I said?",
+];
+const ALIEN_FAREWELL_MESSAGES=[
+  "Nice knowing ya!",
+  "I don't blame you!",
+  "No hard feelings!",
+  "Worth a shot!",
+  "Catch you on the flip side!",
+  "Wheeeeee!",
+  "I'll write!",
+  "Tell my clones I said hi!",
+];
+function chuteOccupant(){ return state.aliens.find(a=> a.state==='chute' || a.state==='launching') || null; }
+function chuteAlienScale(a){ return layout.chute.w*0.34/a.size; }
+function hitChute(pos){
+  const c=layout.chute, m=18;
+  return Math.abs(pos.x-c.x) <= c.w/2+m && Math.abs(pos.y-c.y) <= c.h/2+m;
+}
+function hitChuteButton(pos){
+  const b=layout.chuteBtn;
+  return Math.abs(pos.x-b.x) <= Math.max(b.w, 44)/2 && Math.abs(pos.y-b.y) <= Math.max(b.h, 44)/2;
+}
+function putAlienInChute(a){
+  throwVelocity();
+  a.state='chute';
+  a.walkPhase=null; a.fixitMode=false; a.tumbled=false; a.hideJumpOut=false;
+  a.fvx=a.fvy=0;
+  a.greeted = true;
+  a.message = choice(ALIEN_CHUTE_ENTER_MESSAGES);
+  a.bubbleT = 3;
+  a.chuteTalkT = rand(7,11);
+  AudioEngine.chuteAccept();
+}
+function launchChute(){
+  const ch=state.chute, a=chuteOccupant();
+  ch.press = 0.15;
+  if(!a || a.state!=='chute'){ AudioEngine.uiBlip(160); return; }
+  a.state='launching';
+  a.launchT=0;
+  a.chuteScale=a.scale;
+  a.bubbleT=0;
+  ch.flash=1;
+  ch.hatchT=CHUTE_HATCH_DUR;
+  state.irisTarget=1; // open up so everyone gets to watch
+  AudioEngine.airlock();
+}
+// Out through the hatch: from here it's a little figure in space, crossing the window left to right.
+function startChuteFlight(a){
+  const {cx,cy,r}=layout.iris;
+  a.state='spaced';
+  a.flightT=0;
+  a.flightY0 = cy + r*rand(0.1,0.35);
+  a.flightY1 = cy - r*rand(0.2,0.45);
+  a.x = cx - r*1.15; a.y = a.flightY0;
+  a.rot = 0; a.spin = choice([-1,1])*rand(1.5,2.8);
+  a.opacity = 1;
+  a.saidBye = false;
+}
+function updateChute(dt){
+  const ch=state.chute;
+  ch.flash = Math.max(0, ch.flash-dt*2.5);
+  ch.press = Math.max(0, ch.press-dt);
+  ch.hatchT = Math.max(0, ch.hatchT-dt);
+  ch.hatch = lerp(ch.hatch, ch.hatchT>0 ? 1 : 0, Math.min(1, dt*(ch.hatchT>0 ? 9 : 4)));
+  state.forceField.t = Math.max(0, state.forceField.t-dt);
+}
+function updateChuteAlien(a, dt){
+  const c=layout.chute;
+  if(a.state==='chute'){
+    a.scale = lerp(a.scale, chuteAlienScale(a), Math.min(1, dt*6));
+    a.x = c.x + Math.sin(state.t*0.9+a.phase)*c.w*0.07;
+    a.y = c.y + c.h*0.1 + Math.sin(state.t*1.7+a.phase)*2;
+    a.baseX=a.x; a.baseY=a.y;
+    a.chuteTalkT -= dt;
+    if(a.chuteTalkT<=0 && a.bubbleT<=0){
+      a.message = choice(ALIEN_CHUTE_WAIT_MESSAGES);
+      a.bubbleT = 3;
+      a.chuteTalkT = rand(8,13);
+    }
+  } else if(a.state==='launching'){
+    a.launchT += dt;
+    const u = clamp(a.launchT/CHUTE_SUCK_DUR, 0, 1);
+    a.scale = a.chuteScale*(1 - 0.85*u*u);
+    a.opacity = 1 - u*u;
+    a.x = lerp(a.x, c.x, Math.min(1, dt*10));
+    a.y = lerp(a.y, c.y - c.h*0.05, Math.min(1, dt*10));
+    if(u>=1) startChuteFlight(a);
+  } else if(a.state==='spaced'){
+    const {cx,r}=layout.iris;
+    a.flightT += dt;
+    const u = a.flightT/CHUTE_FLIGHT_DUR;
+    a.x = lerp(cx - r*1.15, cx + r*1.15, u);
+    a.y = lerp(a.flightY0, a.flightY1, u) - Math.sin(u*Math.PI)*r*0.12;
+    a.scale = lerp(0.62, 0.22, u);
+    a.rot += a.spin*dt;
+    a.opacity = u>0.8 ? clamp((1-u)/0.2, 0, 1) : 1;
+    // Speak up once it's properly in view, and be done talking by the time it's gone.
+    if(!a.saidBye && a.x > cx - r*0.8){
+      a.saidBye = true;
+      a.message = choice(ALIEN_FAREWELL_MESSAGES);
+      a.bubbleT = CHUTE_FLIGHT_DUR*0.68;
+    }
+    if(u>=1) a.state='gone';
+  }
 }
 
 function maybeTriggerFixit(a){
@@ -2154,6 +2382,7 @@ function update(){
 
   updateArm(dt);
   updateBarrelSlots(dt);
+  updateChute(dt);
   // Sector change only once the arm has hauled away all four barrels.
   if(state.phase==='playing' && !state.breaching && armIdle() &&
      state.barrels.every(b=>b.status==='gone')){
@@ -2433,6 +2662,8 @@ function update(){
         a.x = a.baseX;
         a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
       }
+    } else if(a.state==='chute' || a.state==='launching' || a.state==='spaced'){
+      updateChuteAlien(a, dt);
     } else if(a.state==='ejected'){
       a.x += a.evx*dt; a.y += a.evy*dt;
       a.evx *= 1.01; a.evy = a.evy*1.01 - 26*dt;
@@ -2442,7 +2673,7 @@ function update(){
     if(a.bubbleT>0) a.bubbleT = Math.max(0, a.bubbleT-dt);
   }
   updateAlienStacks(dt);
-  state.aliens = state.aliens.filter(a=> !(a.state==='ejected' && (a.opacity<=0.03 || a.scale<=0.06)));
+  state.aliens = state.aliens.filter(a=> !(a.state==='ejected' && (a.opacity<=0.03 || a.scale<=0.06)) && a.state!=='gone');
 
   state.barrels.forEach(b=>{
     if(b.flashT>0) b.flashT=Math.max(0,b.flashT-dt);
@@ -2598,6 +2829,7 @@ function drawAlienList(list){
     ctx.save();
     ctx.globalAlpha=op;
     ctx.translate(a.x,a.y);
+    if(a.rot) ctx.rotate(a.rot);
     ctx.scale(a.scale,a.scale);
     const R=a.size;
 
@@ -2646,19 +2878,20 @@ function drawSpeechBubble(x,y,text){
   ctx.font='700 13px Rajdhani, sans-serif';
   const padX=12, h=25;
   const w=ctx.measureText(text).width + padX*2;
-  const bx=x-w/2, by=y-h;
+  const bx=clamp(x-w/2, 6, Math.max(6, W-6-w)), by=y-h;
+  const tx = clamp(x, bx+14, bx+w-14); // tail stays on the bubble when it's pushed in from an edge
   ctx.fillStyle='rgba(255,255,255,0.97)';
   roundRectPath(bx,by,w,h,8);
   ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(x-7,by+h);
-  ctx.lineTo(x+7,by+h);
+  ctx.moveTo(tx-7,by+h);
+  ctx.lineTo(tx+7,by+h);
   ctx.lineTo(x,by+h+9);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle='#14202a';
   ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(text, x, by+h/2+1);
+  ctx.fillText(text, bx+w/2, by+h/2+1);
 }
 function drawAlienBubbles(){
   state.aliens.forEach(a=>{
@@ -2672,6 +2905,8 @@ function drawAlienBubbles(){
   });
 }
 
+// Aliens drawn somewhere other than the bay floor: out in space, in the arm's grip, in the chute.
+const OFF_FLOOR_ALIEN_STATES = new Set(['floating','ejected','jammed','abducted','chute','launching','spaced']);
 function draw(){
   ctx.clearRect(0,0,W,H);
   ctx.save();
@@ -2688,6 +2923,7 @@ function draw(){
   ctx.beginPath(); ctx.rect(-W, -H, W*3, layout.floorTop+H); ctx.clip();
   drawIrisWindow();
   ctx.restore();
+  drawChute();
   drawEmitters();
   drawRedButton();
   drawLever();
@@ -2695,7 +2931,7 @@ function draw(){
   drawBarrels();
   if(state.held) drawBeams();
   drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone'));
-  drawAlienList(state.aliens.filter(a=> a.state!=='floating' && a.state!=='ejected' && a.state!=='jammed' && a.state!=='abducted' && !isArmLayerAlien(a) && a.walkPhase!=='hiding' && !isFarTrackAlien(a)));
+  drawAlienList(state.aliens.filter(a=> !OFF_FLOOR_ALIEN_STATES.has(a.state) && !isArmLayerAlien(a) && a.walkPhase!=='hiding' && !isFarTrackAlien(a)));
   drawParticles();
   drawAlienBubbles();
 
@@ -2745,7 +2981,8 @@ function drawIrisWindow(){
   });
 
   drawRockList(state.rocks.filter(r=>r.state==='floating' || r.state==='ejected'));
-  drawAlienList(state.aliens.filter(a=>a.state==='floating' || a.state==='ejected'));
+  drawAlienList(state.aliens.filter(a=>a.state==='floating' || a.state==='ejected' || a.state==='spaced'));
+  drawForceField();
 
   ctx.restore();
 
@@ -2939,6 +3176,158 @@ function drawLever(){
   if(lit){ ctx.shadowColor='#ff3b3b'; ctx.shadowBlur=16; }
   ctx.beginPath(); ctx.arc(lx,ly,5,0,TAU); ctx.fill();
   ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+// Static over the iris glass: a glow where the alien hit, jittery scan lines and a crackling rim.
+// Drawn inside drawIrisWindow's clip, so it only covers the window.
+function drawForceField(){
+  const ff=state.forceField;
+  if(ff.t<=0) return;
+  const {cx,cy,r}=layout.iris;
+  const k=ff.t/FORCE_FIELD_DUR;
+  ctx.save();
+  const g=ctx.createRadialGradient(ff.x,ff.y,0,ff.x,ff.y,r*1.3);
+  g.addColorStop(0,`rgba(170,240,255,${0.45*k})`);
+  g.addColorStop(0.35,`rgba(91,230,217,${0.22*k})`);
+  g.addColorStop(1,`rgba(91,160,230,${0.10*k})`);
+  ctx.fillStyle=g;
+  ctx.fillRect(cx-r,cy-r,r*2,r*2);
+  ctx.lineWidth=1;
+  const lines = reducedMotion ? 0 : 26;
+  for(let i=0;i<lines;i++){
+    const y=cy-r+Math.random()*r*2, x=cx-r+Math.random()*r*2, len=rand(r*0.1, r*0.6);
+    ctx.strokeStyle=`rgba(${Math.random()<0.5?'220,255,255':'120,220,255'},${rand(0.2,0.8)*k})`;
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+len,y); ctx.stroke();
+  }
+  ctx.strokeStyle=`rgba(190,250,255,${0.8*k})`;
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  const N=48;
+  for(let i=0;i<=N;i++){
+    const a=i/N*TAU, rr=r*(0.97 + (reducedMotion ? 0 : rand(-0.025,0.025)));
+    const px=cx+Math.cos(a)*rr, py=cy+Math.sin(a)*rr;
+    if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+// The airlock chute: a glass box in a wall frame. Behind the glass is the outer hatch, a round
+// port that irises open onto space when the chute launches. The occupant is drawn between the two.
+function drawChute(){
+  const c=layout.chute, ch=state.chute, occ=chuteOccupant();
+  const x0=c.x-c.w/2, y0=c.y-c.h/2, F=Math.max(5, c.w*0.07);
+  ctx.save();
+  // wall frame
+  ctx.fillStyle='#1b212b';
+  roundRectPath(x0-F, y0-F, c.w+F*2, c.h+F*2, 6); ctx.fill();
+  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='#151b23';
+  [[x0-F*0.5,y0-F*0.5],[x0+c.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+c.h+F*0.5],[x0+c.w+F*0.5,y0+c.h+F*0.5]].forEach(([bx,by])=>{
+    ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
+  });
+  // inside of the box, with the outer hatch in its back wall
+  ctx.fillStyle='#0c1118';
+  ctx.fillRect(x0, y0, c.w, c.h);
+  const px=c.x, py=c.y-c.h*0.05, pr=c.w*0.36;
+  ctx.fillStyle='#232a35';
+  ctx.beginPath(); ctx.arc(px,py,pr*1.12,0,TAU); ctx.fill();
+  ctx.save();
+  ctx.beginPath(); ctx.arc(px,py,pr,0,TAU); ctx.clip();
+  ctx.fillStyle=`hsl(${state.nebulaHue},45%,8%)`;
+  ctx.fillRect(px-pr,py-pr,pr*2,pr*2);
+  ctx.fillStyle='#dfeaff';
+  for(let i=0;i<7;i++){
+    const s=state.stars[i]; if(!s) break;
+    ctx.globalAlpha=0.5+0.5*s.r;
+    ctx.beginPath(); ctx.arc(px+Math.cos(s.a)*pr*s.r, py+Math.sin(s.a)*pr*s.r, 0.9, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  // hatch leaves: closed they meet in the middle, open they slide back into the rim
+  const open=ch.hatch;
+  ctx.fillStyle='#2e3644'; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=1;
+  const N=6;
+  for(let i=0;i<N;i++){
+    const a0=i/N*TAU + open*0.6, inner=pr*open*1.02;
+    ctx.beginPath();
+    ctx.moveTo(px+Math.cos(a0)*inner, py+Math.sin(a0)*inner);
+    ctx.arc(px,py,pr*1.05,a0,a0+TAU/N+0.02);
+    ctx.lineTo(px+Math.cos(a0+TAU/N)*inner, py+Math.sin(a0+TAU/N)*inner);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+  // occupant, inside the glass
+  if(occ){
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0,y0,c.w,c.h); ctx.clip();
+    drawAlienList([occ]);
+    ctx.restore();
+  }
+  // glass front: a tint, two highlight streaks, a cyan edge; white flash on launch
+  ctx.fillStyle='rgba(150,215,255,0.08)';
+  ctx.fillRect(x0,y0,c.w,c.h);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0,y0,c.w,c.h); ctx.clip();
+  ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineCap='round';
+  ctx.lineWidth=c.w*0.09;
+  ctx.beginPath(); ctx.moveTo(x0+c.w*0.15, y0+c.h*0.55); ctx.lineTo(x0+c.w*0.55, y0+c.h*0.08); ctx.stroke();
+  ctx.lineWidth=c.w*0.04;
+  ctx.beginPath(); ctx.moveTo(x0+c.w*0.32, y0+c.h*0.62); ctx.lineTo(x0+c.w*0.72, y0+c.h*0.15); ctx.stroke();
+  ctx.restore();
+  if(ch.flash>0){
+    ctx.fillStyle=`rgba(230,250,255,${ch.flash*0.7})`;
+    ctx.fillRect(x0,y0,c.w,c.h);
+  }
+  ctx.strokeStyle='rgba(91,230,217,0.55)'; ctx.lineWidth=1.5;
+  ctx.strokeRect(x0+0.5,y0+0.5,c.w-1,c.h-1);
+  // stencil on the top of the frame, and an occupancy light
+  ctx.font=`700 ${Math.max(6, Math.min(9, F*1.1))}px Orbitron, sans-serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='rgba(255,182,72,0.75)';
+  ctx.fillText('AIRLOCK', c.x, y0-F*0.5);
+  const lit = occ && occ.state==='chute' && Math.sin(state.t*Math.PI*2.4)>0;
+  ctx.fillStyle = lit ? '#ffb648' : '#4a3a1e';
+  if(lit){ ctx.shadowColor='#ffb648'; ctx.shadowBlur=10; }
+  ctx.beginPath(); ctx.arc(x0+c.w+F*0.5, c.y, Math.max(2, F*0.32), 0, TAU); ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.restore();
+  drawChuteButton(!!occ && occ.state==='chute');
+}
+function drawChuteButton(armed){
+  const b=layout.chuteBtn, ch=state.chute;
+  const x0=b.x-b.w/2, y0=b.y-b.h/2 + (ch.press>0 ? 1.5 : 0);
+  ctx.save();
+  // hazard-striped bezel
+  roundRectPath(x0, y0, b.w, b.h, 5);
+  ctx.fillStyle='#161b22'; ctx.fill();
+  ctx.save(); ctx.clip();
+  ctx.fillStyle='rgba(255,182,72,0.6)';
+  for(let sx=x0-b.h; sx<x0+b.w+b.h; sx+=10){
+    ctx.beginPath(); ctx.moveTo(sx,y0+b.h); ctx.lineTo(sx+b.h,y0); ctx.lineTo(sx+b.h+5,y0); ctx.lineTo(sx+5,y0+b.h); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  // the button itself: red and pulsing when there's someone to launch
+  const inset=4;
+  roundRectPath(x0+inset, y0+inset, b.w-inset*2, b.h-inset*2, 3);
+  if(armed){
+    const pulse=0.5+0.5*Math.sin(state.t*5);
+    const g=ctx.createLinearGradient(0,y0,0,y0+b.h);
+    g.addColorStop(0,'#ff6b6b'); g.addColorStop(1,'#a51f1f');
+    ctx.fillStyle=g;
+    ctx.shadowColor='#ff3b3b'; ctx.shadowBlur=6+10*pulse;
+  } else {
+    ctx.fillStyle='#2a303a';
+  }
+  ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1; ctx.stroke();
+  ctx.font='700 11px Orbitron, sans-serif';
+  const fit=(b.w-inset*2-6)/ctx.measureText('LAUNCH').width;
+  ctx.font=`700 ${Math.max(7, Math.min(11, 11*fit)).toFixed(1)}px Orbitron, sans-serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle = armed ? '#fff3f0' : '#5c6b85';
+  ctx.fillText('LAUNCH', b.x, y0+b.h/2+0.5);
   ctx.restore();
 }
 
@@ -3445,7 +3834,7 @@ const SaveGame = (()=>{
   function snapshot(){
     const aliens=[];
     for(const a of state.aliens){
-      if(a.state==='ejected') continue;            // already on its way out the iris
+      if(a.state==='ejected' || a.state==='launching' || a.state==='spaced') continue;  // on its way out
       const o={};
       for(const k in a) if(!ALIEN_SKIP.has(k)) o[k]=a[k];
       o.ridingOn = a.ridingOn ? a.ridingOn.id : null;

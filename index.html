@@ -115,12 +115,7 @@ window.CARGO_MODE = (function(){
   return {
     id: 'o2',
     title: 'OXYGEN SORT',
-    intro: "Mineral-rich rocks drift beyond the cargo bay window. Tractor-grab each one, read its oxygen concentration off the scanner, and drop it into the barrel that matches — five of a kind seals the barrel.",
-    rules: {
-      READ:  "A rock's O2 value shows as a fraction, decimal, or percent — they can mean the same thing.",
-      SORT:  "The first rock in an empty barrel sets that barrel's target value.",
-      MATCH: "Wrong value in an armed barrel triggers a hull-damaging blowout.",
-    },
+    intro: "Sort the rocks by their oxygen content.",
     scanLabel: 'O2 CONCENTRATION',
     pickValue(sector){
       const pair = choice(currentPool(sector));

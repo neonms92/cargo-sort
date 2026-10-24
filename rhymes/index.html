@@ -43,12 +43,7 @@ window.CARGO_MODE = (function(){
   return {
     id: 'rhymes',
     title: 'RHYME SORT',
-    intro: "The rocks drifting past the cargo bay window are tagged with words today. Tractor-grab each one, read its word off the scanner, and drop it into the barrel it rhymes with — five of a kind seals the barrel.",
-    rules: {
-      READ:  "Each rock carries a word. Rhymes go by sound, not spelling: blue, shoe and two all rhyme.",
-      SORT:  "The first word in an empty barrel sets its rhyme. The barrel shows that word.",
-      MATCH: "A word that doesn't rhyme in an armed barrel triggers a hull-damaging blowout.",
-    },
+    intro: "Sort the words by their rhyme.",
     scanLabel: 'SPECIMEN TAG',
     pickValue(sector){
       return {key: choice(Object.keys(FAMILIES).filter(k=>sector>=FAMILIES[k].from))};
