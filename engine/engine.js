@@ -1706,6 +1706,7 @@ function startAlienFixit(a){
   spawnDebrisRain(topX, topY);
   AudioEngine.explosion();
   state.shake = Math.min(state.shake+18, 26);
+  healHull(15);
   a.state='falling';
   a.x = topX; a.y = topY; a.baseX = topX; a.baseY = topY;
   a.fvx = 0; a.fvy = 0;
@@ -2518,7 +2519,6 @@ function update(){
           a.fixitMode = false;
           a.message = choice(ALIEN_FIXIT_MESSAGES);
           a.bubbleT = 3.5;
-          healHull(15);
           a.walkPhase = 'track1';
           a.track = 1;
           a.targetScale = ALIEN_TRACK1_SCALE;
