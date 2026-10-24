@@ -9,7 +9,8 @@
 <script>
 // Matching system: Spanish verb conjugation. Each rock carries one form of a verb (tengo, tuvo,
 // tendrán); barrels match on the verb it comes from. While a rock is held, the scanner names the
-// form in English grammar terms (preterite, 2nd person singular, ...).
+// form in English grammar terms (preterite, 2nd person singular, ...) with an example phrase
+// that uses "verb" as the verb ("they verbed").
 // The game itself is the shared engine (../engine/engine.js); see the interface notes there.
 // Forms are built from the regular endings plus each verb's irregulars, written out in full where
 // a rule would be fiddly. Vosotros is left out (Latin American usage). A form shared by two verbs
@@ -35,6 +36,21 @@ window.CARGO_MODE = (function(){
     subj: ['PRESENT SUBJUNCTIVE', 5],
     cmd:  ['COMMAND (TÚ)', 5],
   };
+  // English example under the label, with "verb" standing in for the verb: "they verbed"
+  const WHO = ['I','you','he/she','we','they'];
+  const EXAMPLE = {
+    inf:  ()=> 'to verb',
+    ger:  ()=> 'is verbing',
+    part: ()=> 'has verbed',
+    pres: (s,p)=> s + (p===2 ? ' verbs' : ' verb'),
+    pret: s=> s + ' verbed',
+    fut:  s=> s + ' will verb',
+    imp:  (s,p)=> s + (p===0||p===2 ? ' was verbing' : ' were verbing'),
+    cond: s=> s + ' would verb',
+    subj: s=> 'that ' + s + ' verb',
+    cmd:  ()=> 'Verb!',
+  };
+  const example = (tense, ps)=> EXAMPLE[tense](ps.map(p=>WHO[p]).join(' or '), ps[0]);
   const ENDINGS = {
     ar: {pres:['o','as','a','amos','an'], pret:['é','aste','ó','amos','aron'], imp:['aba','abas','aba','ábamos','aban'], subj:['e','es','e','emos','en']},
     er: {pres:['o','es','e','emos','en'], pret:['í','iste','ió','imos','ieron'], imp:['ía','ías','ía','íamos','ían'], subj:['a','as','a','amos','an']},
@@ -122,9 +138,10 @@ window.CARGO_MODE = (function(){
       });
       const desc = [...groups.values()].map(({ps, names})=>
         names.join(' OR ') + (ps.length ? ' · ' + personText(ps) : '')).join('  OR  ');
+      const examples = [...byTense].map(([tense, ps])=> '"' + example(tense, ps) + '"').join(' / ');
       // a form shows up once every tense it can be read as has appeared
       const from = Math.min(...[...byTense.keys()].map(k=>TENSES[k][1]));
-      DESC[text] = desc;
+      DESC[text] = desc + '\n' + examples;
       return {text, from};
     });
   }

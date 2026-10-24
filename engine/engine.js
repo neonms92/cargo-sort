@@ -12,7 +12,7 @@
 //   makeItem(value, sector, labels)  how one rock shows that value: {rep, text, glyph?}
 //                         (labels: texts the barrels are showing right now)
 //   same(a, b)            optional; values match (default: same key)
-//   repLabel(item)        optional; line beside the readout while a rock is held
+//   repLabel(item)        optional; line beside the readout while a rock is held (\n breaks lines)
 //   readoutHTML(item)     optional; custom scanner markup (default: item.text)
 //   drawGlyph(ctx, glyph, x, y, r, colors)  optional; draws item.glyph on a barrel hologram, returns true
 // A barrel is labelled with its first rock's item (text/glyph); the value it matches stays hidden.
@@ -130,7 +130,7 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #o2Readout .pie{height:1.15em; width:1.15em; display:block; margin:0 auto; filter:drop-shadow(0 0 6px rgba(91,230,217,0.45));}
 #o2Readout.active{color:var(--cyan); text-shadow:0 0 16px rgba(91,230,217,0.55);}
 #toolbarSide{display:flex; flex-direction:column; gap:4px; min-width:170px;}
-#repLabel{font-family:var(--font-display); font-size:9px; letter-spacing:2px; color:var(--text-dim);}
+#repLabel{font-family:var(--font-display); font-size:9px; letter-spacing:2px; color:var(--text-dim); white-space:pre-line;}
 #idlePrompt{
   font-family:var(--font-body); font-size:15px; font-weight:600; color:var(--text-dim);
   letter-spacing:.5px; text-align:center;
