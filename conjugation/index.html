@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Cargo Bay: Conjugation Sort Protocol</title>
+</head>
+<body>
+<script>
+// Matching system: Spanish verb conjugation. Each rock carries one form of a verb (tengo, tuvo,
+// tendrán); barrels match on the verb it comes from. While a rock is held, the scanner names the
+// form in English grammar terms (preterite, 2nd person singular, ...).
+// The game itself is the shared engine (../engine/engine.js); see the interface notes there.
+// Forms are built from the regular endings plus each verb's irregulars, written out in full where
+// a rule would be fiddly. Vosotros is left out (Latin American usage). A form shared by two verbs
+// (fui: ser and ir; ve: ir and ver) has no single right barrel, so it's dropped from both.
+window.CARGO_MODE = (function(){
+  const choice=(arr)=>arr[Math.floor(Math.random()*arr.length)];
+
+  // persons: yo, tú, él/ella/usted, nosotros, ellos/ellas/ustedes
+  const PERSONS = ['1ST PERSON SINGULAR','2ND PERSON SINGULAR','3RD PERSON SINGULAR','1ST PERSON PLURAL','3RD PERSON PLURAL'];
+  // yo and él share a form in several tenses (hablaba, hable): "1ST OR 3RD PERSON SINGULAR"
+  const personText = ps => ps.length===1 ? PERSONS[ps[0]]
+    : ps.map(p=>PERSONS[p].split(' ')[0]).join(' OR ') + ' PERSON ' + PERSONS[ps[0]].split(' ')[2];
+  // tense: [scanner name, first sector it appears]
+  const TENSES = {
+    inf:  ['INFINITIVE', 1],
+    pres: ['PRESENT', 1],
+    ger:  ['PROGRESSIVE (-ING)', 1],
+    pret: ['PRETERITE (PAST)', 3],
+    fut:  ['FUTURE', 3],
+    part: ['PAST PARTICIPLE', 3],
+    imp:  ['IMPERFECT (PAST)', 5],
+    cond: ['CONDITIONAL', 5],
+    subj: ['PRESENT SUBJUNCTIVE', 5],
+    cmd:  ['COMMAND (TÚ)', 5],
+  };
+  const ENDINGS = {
+    ar: {pres:['o','as','a','amos','an'], pret:['é','aste','ó','amos','aron'], imp:['aba','abas','aba','ábamos','aban'], subj:['e','es','e','emos','en']},
+    er: {pres:['o','es','e','emos','en'], pret:['í','iste','ió','imos','ieron'], imp:['ía','ías','ía','íamos','ían'], subj:['a','as','a','amos','an']},
+    ir: {pres:['o','es','e','imos','en'], pret:['í','iste','ió','imos','ieron'], imp:['ía','ías','ía','íamos','ían'], subj:['a','as','a','amos','an']},
+  };
+  const FUT = ['é','ás','á','emos','án'], COND = ['ía','ías','ía','íamos','ían'];
+
+  // from: first sector the verb appears. Anything not given follows the regular pattern:
+  // full arrays (pres, pret, imp, subj) or yo (present yo only), futStem, ger, part, cmd (null = none).
+  const VERBS = {
+    hablar: {from:1},
+    comer:  {from:1},
+    vivir:  {from:1},
+    tener:  {from:1, pres:['tengo','tienes','tiene','tenemos','tienen'], pret:['tuve','tuviste','tuvo','tuvimos','tuvieron'], futStem:'tendr', cmd:'ten'},
+    ser:    {from:1, pres:['soy','eres','es','somos','son'], pret:['fui','fuiste','fue','fuimos','fueron'], imp:['era','eras','era','éramos','eran'],
+             subj:['sea','seas','sea','seamos','sean'], ger:'siendo', cmd:'sé'},
+    ir:     {from:1, pres:['voy','vas','va','vamos','van'], pret:['fui','fuiste','fue','fuimos','fueron'], imp:['iba','ibas','iba','íbamos','iban'],
+             subj:['vaya','vayas','vaya','vayamos','vayan'], ger:'yendo', cmd:'ve'},
+    hacer:  {from:3, yo:'hago', pret:['hice','hiciste','hizo','hicimos','hicieron'], futStem:'har', part:'hecho', cmd:'haz'},
+    poder:  {from:3, pres:['puedo','puedes','puede','podemos','pueden'], pret:['pude','pudiste','pudo','pudimos','pudieron'], futStem:'podr',
+             subj:['pueda','puedas','pueda','podamos','puedan'], ger:'pudiendo', cmd:null},
+    querer: {from:3, pres:['quiero','quieres','quiere','queremos','quieren'], pret:['quise','quisiste','quiso','quisimos','quisieron'], futStem:'querr',
+             subj:['quiera','quieras','quiera','queramos','quieran'], cmd:null},
+    decir:  {from:3, pres:['digo','dices','dice','decimos','dicen'], pret:['dije','dijiste','dijo','dijimos','dijeron'], futStem:'dir',
+             ger:'diciendo', part:'dicho', cmd:'di'},
+    venir:  {from:3, pres:['vengo','vienes','viene','venimos','vienen'], pret:['vine','viniste','vino','vinimos','vinieron'], futStem:'vendr',
+             ger:'viniendo', cmd:'ven'},
+    estar:  {from:3, pres:['estoy','estás','está','estamos','están'], pret:['estuve','estuviste','estuvo','estuvimos','estuvieron'],
+             subj:['esté','estés','esté','estemos','estén']},
+    saber:  {from:5, yo:'sé', pret:['supe','supiste','supo','supimos','supieron'], futStem:'sabr', subj:['sepa','sepas','sepa','sepamos','sepan']},
+    poner:  {from:5, yo:'pongo', pret:['puse','pusiste','puso','pusimos','pusieron'], futStem:'pondr', part:'puesto', cmd:'pon'},
+    salir:  {from:5, yo:'salgo', futStem:'saldr', cmd:'sal'},
+    dormir: {from:5, pres:['duermo','duermes','duerme','dormimos','duermen'], pret:['dormí','dormiste','durmió','dormimos','durmieron'],
+             subj:['duerma','duermas','duerma','durmamos','duerman'], ger:'durmiendo'},
+    pedir:  {from:5, pres:['pido','pides','pide','pedimos','piden'], pret:['pedí','pediste','pidió','pedimos','pidieron'],
+             subj:['pida','pidas','pida','pidamos','pidan'], ger:'pidiendo'},
+    ver:    {from:5, pres:['veo','ves','ve','vemos','ven'], pret:['vi','viste','vio','vimos','vieron'], imp:['veía','veías','veía','veíamos','veían'],
+             subj:['vea','veas','vea','veamos','vean'], ger:'viendo', part:'visto'},
+  };
+
+  // Every form of one verb as [text, tense, person|null].
+  function conjugate(inf, v){
+    const cls = inf.slice(-2), stem = inf.slice(0,-2), E = ENDINGS[cls];
+    const pres = v.pres || E.pres.map((e,i)=> i===0 && v.yo ? v.yo : stem+e);
+    // the subjunctive grows from the present yo form: tengo → tenga
+    const subjStem = pres[0].endsWith('o') ? pres[0].slice(0,-1) : stem;
+    const futStem = v.futStem || inf;
+    const out = [[inf,'inf',null], [v.ger || stem+(cls==='ar'?'ando':'iendo'),'ger',null], [v.part || stem+(cls==='ar'?'ado':'ido'),'part',null]];
+    const add = (tense, forms)=> forms.forEach((f,i)=> out.push([f, tense, i]));
+    add('pres', pres);
+    add('pret', v.pret || E.pret.map(e=>stem+e));
+    add('fut',  FUT.map(e=>futStem+e));
+    add('imp',  v.imp || E.imp.map(e=>stem+e));
+    add('cond', COND.map(e=>futStem+e));
+    add('subj', v.subj || E.subj.map(e=>subjStem+e));
+    const cmd = v.cmd===undefined ? pres[2] : v.cmd;   // regular tú command = él present
+    if(cmd) out.push([cmd,'cmd',null]);
+    return out;
+  }
+
+  // FORMS[verb] = [{text, from, desc}]: one entry per distinct spelling, all its readings merged.
+  const owners = {};          // text → set of verbs
+  const raw = {};
+  for(const inf in VERBS){
+    raw[inf] = conjugate(inf, VERBS[inf]);
+    raw[inf].forEach(([t])=> (owners[t] = owners[t] || new Set()).add(inf));
+  }
+  const FORMS = {}, DESC = {};
+  for(const inf in raw){
+    const byText = new Map();
+    raw[inf].forEach(([t, tense, p])=>{
+      if(owners[t].size>1) return;       // shared with another verb: ambiguous, drop
+      if(!byText.has(t)) byText.set(t, new Map());
+      const byTense = byText.get(t);
+      if(!byTense.has(tense)) byTense.set(tense, []);
+      if(p!==null) byTense.get(tense).push(p);
+    });
+    FORMS[inf] = [...byText].map(([text, byTense])=>{
+      // tenses read with the same persons share one label: "PRESENT OR PRETERITE · 1ST PERSON PLURAL"
+      const groups = new Map();
+      byTense.forEach((ps, tense)=>{
+        const k = ps.join();
+        if(!groups.has(k)) groups.set(k, {ps, names:[]});
+        groups.get(k).names.push(TENSES[tense][0]);
+      });
+      const desc = [...groups.values()].map(({ps, names})=>
+        names.join(' OR ') + (ps.length ? ' · ' + personText(ps) : '')).join('  OR  ');
+      // a form shows up once every tense it can be read as has appeared
+      const from = Math.min(...[...byTense.keys()].map(k=>TENSES[k][1]));
+      DESC[text] = desc;
+      return {text, from};
+    });
+  }
+
+  const recent = [];   // don't repeat a form for a while
+
+  return {
+    id: 'conjugation',
+    title: 'CONJUGATION SORT',
+    intro: "Sort the verbs by their infinitive.",
+    scanLabel: 'SPECIMEN TAG',
+    pickValue(sector){
+      return {key: choice(Object.keys(VERBS).filter(k=>sector>=VERBS[k].from))};
+    },
+    makeItem(value, sector, labels){
+      const all = FORMS[value.key].filter(f=>sector>=f.from).map(f=>f.text);
+      // skip forms the barrels are already showing; prefer forms not seen lately
+      const fresh = all.filter(t=>!(labels||[]).includes(t));
+      let pool = fresh.filter(t=>!recent.includes(t));
+      if(!pool.length) pool = fresh.length ? fresh : all;
+      const text = choice(pool);
+      recent.push(text); if(recent.length>12) recent.shift();
+      return {rep:'verb', text};
+    },
+    // looked up by text, so a rock restored from a save still gets its description
+    repLabel(item){ return DESC[item.text] || ''; },
+  };
+})();
+</script>
+<script>
+// Load the shared engine, passing on this page's ?v= cache-buster (see the engine's live update).
+(function(){ var v=/[?&]v=(\d+)/.exec(location.search);
+  document.write('<script data-cargo-engine src="../engine/engine.js'+(v?'?v='+v[1]:'')+'"><\/script>'); })();
+</script>
+</body>
+</html>
