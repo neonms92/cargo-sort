@@ -888,8 +888,18 @@ const ALIEN_TRACK2_SCALE = 0.42; // scaled down for distance while on the far tr
 const ALIEN_TRACK_GAP_SECONDS = 30; // time spent off-screen between track 1 and track 2
 const ALIEN_TRACK_EDGE_MARGIN = 50; // extra px past the window edge before an alien is considered off-screen
 // Walking past a resting rock on track 1, an alien sometimes picks it up, balances it on its
-// head and carries it off the edge of the screen, where it unloads. Otherwise it walks past.
+// head and carries it off the edge of the screen, where it unloads. Just as often it kicks the
+// rock along the bay floor instead (never out the window; off the edge it unloads too).
+// Otherwise it walks past.
 const ALIEN_CARRY_CHANCE = 0.25;
+const ALIEN_KICK_ROCK_CHANCE = 0.25;
+const ALIEN_KICK_ROCK_MESSAGES=[
+  "Who left this garbage here?",
+  "Ugh, watch your step, people.",
+  "This is NOT recycling.",
+  "Rude. Absolutely rude.",
+  "Not on my walk, cargo handler.",
+];
 const ALIEN_CARRY_LIFT_SECONDS = 0.45;
 const ALIEN_CARRY_MESSAGES=[
   "I know where this belongs.",
@@ -2555,7 +2565,18 @@ function update(){
             Math.abs(rk.x-a.x) < (a.size*a.scale + rk.size*rk.scale)*0.85);
           if(nearRock){
             rolled.add(nearRock);
-            if(Math.random() < ALIEN_CARRY_CHANCE){
+            const roll = Math.random();
+            if(roll < ALIEN_KICK_ROCK_CHANCE){
+              // Booted forward along the floor: it hops, bounces and skids, still fully sortable.
+              const dir = a.walksReverse ? -1 : 1;
+              nearRock.state = 'falling';
+              nearRock.fvx = dir*rand(180,380);
+              nearRock.fvy = -rand(120,220);
+              AudioEngine.eject();
+              spawnEjectSpark(nearRock.x - dir*nearRock.size*0.5, nearRock.y+4);
+              a.message = choice(ALIEN_KICK_ROCK_MESSAGES);
+              a.bubbleT = 3;
+            } else if(roll < ALIEN_KICK_ROCK_CHANCE + ALIEN_CARRY_CHANCE){
               a.carrying = nearRock;
               nearRock.state = 'carried';
               nearRock.carrier = a;
