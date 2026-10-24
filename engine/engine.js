@@ -1582,7 +1582,6 @@ const ALIEN_FAREWELL_MESSAGES=[
   "Tell my clones I said hi!",
 ];
 function chuteOccupant(){ return state.aliens.find(a=> a.state==='chute' || a.state==='launching') || null; }
-function chuteAlienScale(a){ return layout.chute.w*0.34/a.size; }
 function hitChute(pos){
   const c=layout.chute, m=18;
   return Math.abs(pos.x-c.x) <= c.w/2+m && Math.abs(pos.y-c.y) <= c.h/2+m;
@@ -1638,7 +1637,8 @@ function updateChute(dt){
 function updateChuteAlien(a, dt){
   const c=layout.chute;
   if(a.state==='chute'){
-    a.scale = lerp(a.scale, chuteAlienScale(a), Math.min(1, dt*6));
+    // The chute is on the wall above track 2, so its occupant is drawn at track 2's depth.
+    a.scale = lerp(a.scale, ALIEN_TRACK2_SCALE, Math.min(1, dt*6));
     a.x = c.x + Math.sin(state.t*0.9+a.phase)*c.w*0.07;
     a.y = c.y + c.h*0.1 + Math.sin(state.t*1.7+a.phase)*2;
     a.baseX=a.x; a.baseY=a.y;
@@ -1662,7 +1662,7 @@ function updateChuteAlien(a, dt){
     const u = a.flightT/CHUTE_FLIGHT_DUR;
     a.x = lerp(cx - r*1.15, cx + r*1.15, u);
     a.y = lerp(a.flightY0, a.flightY1, u) - Math.sin(u*Math.PI)*r*0.12;
-    a.scale = lerp(0.62, 0.22, u);
+    a.scale = lerp(ALIEN_TRACK2_SCALE, ALIEN_TRACK2_SCALE*0.4, u);   // out beyond the wall: no bigger than in the chute
     a.rot += a.spin*dt;
     a.opacity = u>0.8 ? clamp((1-u)/0.2, 0, 1) : 1;
     // Speak up once it's properly in view, and be done talking by the time it's gone.
