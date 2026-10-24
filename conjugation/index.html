@@ -134,12 +134,7 @@ window.CARGO_MODE = (function(){
   return {
     id: 'conjugation',
     title: 'CONJUGATION SORT',
-    intro: "The rocks drifting past the cargo bay window are tagged with Spanish verbs today. Tractor-grab each one, read its verb off the scanner, and drop it into the barrel for the same verb — tengo, tuvo and tendrán all belong together. Five of a kind seals the barrel.",
-    rules: {
-      READ:  "Each rock carries one form of a Spanish verb. The scanner names the form: tense and person.",
-      SORT:  "The first rock in an empty barrel decides its verb. The barrel shows that first form — remember which verb it was.",
-      MATCH: "A form of a different verb in an armed barrel triggers a hull-damaging blowout.",
-    },
+    intro: "Sort the verbs by their infinitive.",
     scanLabel: 'SPECIMEN TAG',
     pickValue(sector){
       return {key: choice(Object.keys(VERBS).filter(k=>sector>=VERBS[k].from))};
