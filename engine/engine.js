@@ -296,7 +296,7 @@ function injectShell(){
     <div class="ship">S.S. KESTREL-9 — CARGO DIVISION</div>
     <h1 id="endTitle">HULL BREACH</h1>
     <p id="endText">Structural integrity has failed. Cargo operations suspended.</p>
-    <button class="bigBtn danger" id="restartBtn">REBOOT SYSTEMS</button>
+    <button class="bigBtn danger" id="restartBtn">CALL FOR RESCUE</button>
   </div>
 </div>
 `);
@@ -1654,7 +1654,7 @@ function gameOver(){
 // into shards, and the iris, emitters, airlock, button, lever, floor doors, robot arm, barrels, every
 // rock and every alien (the off-screen ones drift in from the edges) float off into the distance,
 // revealing the whole nebula. Up to two aliens offer some reassurance. Then the end screen fades in
-// over the drift. On REBOOT SYSTEMS a rescue ship tractors us aboard: a glow rises around the edges,
+// over the drift. On CALL FOR RESCUE a rescue ship tractors us aboard: a glow rises around the edges,
 // then the new bay shrinks in from beyond the screen as if we're being pulled in through its open
 // iris, its beam emitters locked on us at the bottom of the screen until we're in place.
 // Each piece is drawn once into its own small canvas when the bay splits, so a frame is just a few
@@ -1937,7 +1937,7 @@ function drawFailure(){
   }
   if(f.flash>0){ ctx.fillStyle=`rgba(255,240,225,${f.flash*f.flash*0.85})`; ctx.fillRect(0,0,W,H); }
 }
-// REBOOT SYSTEMS: the new shift starts on a fresh ship, which reels us in (see drawTractor).
+// CALL FOR RESCUE: the new shift starts on a fresh ship, which reels us in (see drawTractor).
 function startTractor(){
   const f=state.failure, {cx,cy,r}=layout.iris;
   f.talkers.forEach(tk=>{ tk.p.alien.bubbleT=0; });
@@ -1971,21 +1971,19 @@ function drawTractor(){
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, layout.floorTop); ctx.arc(cx, cy, r, 0, TAU); ctx.clip('evenodd'); ctx.drawImage(bgCanvas, 0, 0, W, H); ctx.restore();
     drawBay(clamp((u-0.75)/0.25, 0, 1));
     ctx.restore();
-    // beams from each emitter that's come into view, down to us
-    let seen=0;
+  }
+  // The beams are what's pulling us in, so they're locked on from the start: in from beyond the
+  // edges of the screen until their emitters come into view, down to us at the bottom.
+  const beams=1-release;
+  if(beams>0){
     layout.emitters.forEach((em,i)=>{
-      const x=cx+(em.x-cx)*sc, y=cy+(em.y-cy)*sc;
-      const vis=clamp(Math.min(x+10, W+10-x, y+10, H-y)/60, 0, 1);
-      if(vis<=0) return;
-      seen=Math.max(seen, vis);
+      const from={x:cx+(em.x-cx)*sc, y:cy+(em.y-cy)*sc};
       const to={x:W*0.5 + (i%2 ? 1 : -1)*Math.min(W*0.12, 70), y:H+6};
-      drawBeamLine({x,y}, to, i, vis*on, Math.min(sc, 2.5));
+      drawBeamLine(from, to, i, beams, Math.min(sc, 2.5));
     });
-    if(seen>0){
-      const g=ctx.createRadialGradient(W/2, H, 0, W/2, H, Math.min(W,H)*0.3);
-      g.addColorStop(0, `rgba(160,250,240,${0.4*seen*on})`); g.addColorStop(1, 'rgba(91,230,217,0)');
-      ctx.fillStyle=g; ctx.fillRect(0, H-Math.min(W,H)*0.3, W, Math.min(W,H)*0.3);
-    }
+    const g=ctx.createRadialGradient(W/2, H, 0, W/2, H, Math.min(W,H)*0.3);
+    g.addColorStop(0, `rgba(160,250,240,${0.4*beams})`); g.addColorStop(1, 'rgba(91,230,217,0)');
+    ctx.fillStyle=g; ctx.fillRect(0, H-Math.min(W,H)*0.3, W, Math.min(W,H)*0.3);
   }
   // the tractor field's glow around the edges of the screen
   if(on>0){
