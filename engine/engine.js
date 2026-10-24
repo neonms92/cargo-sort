@@ -204,10 +204,10 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #protocolSwitch a:hover{color:var(--cyan);}
 #protocolSwitch .cur{color:var(--cyan);}
 #protocolSwitch .sep{color:var(--text-dim);}
-/* Catastrophic failure: the HUD loses power, and the end screen lets the wreckage show through. */
+/* Catastrophic failure: the HUD loses power, and the end screen floats over the wreckage without dimming it. */
 #hullPanel, #topRight, #toolbar{transition:opacity 1.2s ease;}
 #app.failed #hullPanel, #app.failed #topRight, #app.failed #toolbar{opacity:0; pointer-events:none;}
-.overlay.adrift{background:radial-gradient(ellipse at 50% 45%, rgba(4,6,10,0.25) 0%, rgba(4,6,10,0.78) 85%); animation:adriftIn 1.6s ease both;}
+.overlay.adrift{background:none; animation:adriftIn 1.6s ease both; text-shadow:0 2px 10px rgba(0,0,0,0.9);}
 @keyframes adriftIn{from{opacity:0;} to{opacity:1;}}
 .bigBtn.danger{background:linear-gradient(180deg, var(--danger), #a52d2d); color:#2a0808; box-shadow:0 0 26px rgba(255,82,82,0.4);}
 
@@ -593,8 +593,8 @@ const AudioEngine = (function(){
     osc.start(now); osc.stop(now+2.3);
   }
 
-  // Reboot: a rising rush as the bay pulls itself back together, then the systems hum on.
-  function rebuild(){
+  // Being reeled in by the new ship's tractor beams: a rush that rises as we're pulled in.
+  function tractorPull(){
     if(!ctx||!enabled) return;
     const now=ctx.currentTime;
     const src=ctx.createBufferSource();
@@ -608,10 +608,9 @@ const AudioEngine = (function(){
     g.gain.exponentialRampToValueAtTime(0.0001, now+1.9);
     src.connect(filt); filt.connect(g); g.connect(master);
     src.start(now); src.stop(now+2);
-    setTimeout(sealHum, 1700);
   }
 
-  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock, spark, rumble, hullFailure, rebuild,
+  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock, spark, rumble, hullFailure, tractorPull,
           get running(){return !!ctx;}};
 })();
 
@@ -800,7 +799,7 @@ const state={
   scars:[], scarGroup:0,
   rumble:{t:0, dur:0, next:2, shake:0},
   irisSparkT:0,
-  failure:null, rebootFlash:0,
+  failure:null,
   warnT:0,
   irisOpen:1, irisTarget:1,
   transition:null,
@@ -1655,13 +1654,18 @@ function gameOver(){
 // into shards, and the iris, emitters, airlock, button, lever, floor doors, robot arm, barrels, every
 // rock and every alien (the off-screen ones drift in from the edges) float off into the distance,
 // revealing the whole nebula. Up to two aliens offer some reassurance. Then the end screen fades in
-// over the drift; REBOOT SYSTEMS pulls the bay back together before the new shift starts.
+// over the drift. On REBOOT SYSTEMS a rescue ship tractors us aboard: a glow rises around the edges,
+// then the new bay shrinks in from beyond the screen as if we're being pulled in through its open
+// iris, its beam emitters locked on us at the bottom of the screen until we're in place.
 // Each piece is drawn once into its own small canvas when the bay splits, so a frame is just a few
 // dozen image blits. Positions are in 3D around a vanishing point: a piece at depth Z is drawn at
 // 1/(1+Z) of its size, so as Z grows it shrinks and closes in on the vanishing point.
 const FAILURE_SPLIT_AT = 1.1;       // seconds from 0% to the split
 const FAILURE_END_SCREEN_AT = 6;    // seconds after the split
-const FAILURE_REBUILD_DUR = 1.8;
+const TRACTOR_GLOW = 1.0;      // edge glow builds before the pull starts
+const TRACTOR_PULL = 3.4;      // in through the new ship's iris
+const TRACTOR_HOLD = 0.5;      // in place, beams still on
+const TRACTOR_RELEASE = 0.6;   // beams disengage
 const ALIEN_REASSURE_MESSAGES=[
   "Happens all the time out here.",
   "Don't panic. I'm not panicking.",
@@ -1671,7 +1675,7 @@ const ALIEN_REASSURE_MESSAGES=[
 function startHullFailure(){
   state.phase='breach';
   AudioEngine.beamStop();
-  state.failure = {t:0, split:false, shards:fractureBay(), pieces:[], flash:0, talkers:[], rebuild:null};
+  state.failure = {t:0, split:false, shards:fractureBay(), pieces:[], flash:0, talkers:[], tractor:null};
   // the last barrels standing go up one after another
   const spots = layout.barrels4.map((a,i)=>({x:a.x, y:a.y-layout.barrelH*0.5, i}))
     .filter(s=>state.barrels[s.i].status==='ready').slice(0,3);
@@ -1869,16 +1873,12 @@ function updateFailure(dt){
     if(f.t>=FAILURE_SPLIT_AT) splitBay();
     return false;   // the bay still updates as normal until it splits
   }
-  if(f.rebuild){
-    const rb=f.rebuild;
-    rb.t+=dt;
-    const u=clamp(rb.t/FAILURE_REBUILD_DUR,0,1), e=u<0.5 ? 4*u*u*u : 1-Math.pow(-2*u+2,3)/2;
-    for(const p of f.pieces){
-      if(p.kind!=='img'){ p.alpha=Math.max(0, p.alpha-dt*2.5); continue; }
-      p.X=lerp(p.from.X, p.X0, e); p.Y=lerp(p.from.Y, p.Y0, e); p.Z=lerp(p.from.Z, 0, e); p.rot=lerp(p.from.rot, 0, e);
-    }
-    if(u>=1) rebootShift();
-    return true;
+  if(f.tractor){
+    const tr=f.tractor, t0=tr.t;
+    tr.t+=dt;
+    if(t0<TRACTOR_GLOW && tr.t>=TRACTOR_GLOW) AudioEngine.tractorPull();
+    if(t0<TRACTOR_GLOW+TRACTOR_PULL+TRACTOR_HOLD && tr.t>=TRACTOR_GLOW+TRACTOR_PULL+TRACTOR_HOLD){ AudioEngine.beamStop(); AudioEngine.sealHum(); }
+    if(tr.t>=TRACTOR_GLOW+TRACTOR_PULL+TRACTOR_HOLD+TRACTOR_RELEASE){ finishTractor(); return true; }
   }
   const decay=Math.exp(-dt*4);
   for(const p of f.pieces){
@@ -1937,12 +1937,63 @@ function drawFailure(){
   }
   if(f.flash>0){ ctx.fillStyle=`rgba(255,240,225,${f.flash*f.flash*0.85})`; ctx.fillRect(0,0,W,H); }
 }
-function startRebuild(){
-  const f=state.failure;
-  f.rebuild={t:0};
+// REBOOT SYSTEMS: the new shift starts on a fresh ship, which reels us in (see drawTractor).
+function startTractor(){
+  const f=state.failure, {cx,cy,r}=layout.iris;
   f.talkers.forEach(tk=>{ tk.p.alien.bubbleT=0; });
-  for(const p of f.pieces) p.from={X:p.X, Y:p.Y, Z:p.Z, rot:p.rot};
-  AudioEngine.rebuild();
+  // big enough that the new ship's iris starts out wider than the whole screen
+  const far=Math.max(...[[0,0],[W,0],[0,H],[W,H]].map(([x,y])=>Math.hypot(x-cx, y-cy)));
+  f.tractor={t:0, S0:Math.max(1.5, far/r*1.08)};
+  resetShiftState();
+  state.phase='tractor';
+  AudioEngine.beamStart();
+}
+function finishTractor(){
+  state.failure=null;
+  bgCanvas.style.visibility='';
+  document.getElementById('app').classList.remove('failed');
+  state.phase='playing';
+}
+// The tractor sequence, drawn over the drifting wreckage: the edge glow, the new ship zooming in
+// around its iris (the wreckage still showing through the window until the glass's own view fades
+// in), and the beams from its emitters to us at the bottom of the screen.
+function drawTractor(){
+  const tr=state.failure.tractor, t=tr.t, {cx,cy,r}=layout.iris;
+  const u=clamp((t-TRACTOR_GLOW)/TRACTOR_PULL, 0, 1), e = u<0.5 ? 4*u*u*u : 1-Math.pow(-2*u+2,3)/2;
+  const sc=Math.exp(Math.log(tr.S0)*(1-e));   // even-feeling zoom: interpolated in log scale
+  const release=clamp((t-TRACTOR_GLOW-TRACTOR_PULL-TRACTOR_HOLD)/TRACTOR_RELEASE, 0, 1);
+  const on=clamp(t/TRACTOR_GLOW, 0, 1)*(1-release);
+  if(t>=TRACTOR_GLOW){
+    ctx.save();
+    ctx.translate(cx,cy); ctx.scale(sc,sc); ctx.translate(-cx,-cy);
+    // walls and floor, with the window left open
+    ctx.save(); ctx.beginPath(); ctx.rect(0, layout.floorTop, W, H); ctx.clip(); ctx.drawImage(bgCanvas, 0, 0, W, H); ctx.restore();
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, layout.floorTop); ctx.arc(cx, cy, r, 0, TAU); ctx.clip('evenodd'); ctx.drawImage(bgCanvas, 0, 0, W, H); ctx.restore();
+    drawBay(clamp((u-0.75)/0.25, 0, 1));
+    ctx.restore();
+    // beams from each emitter that's come into view, down to us
+    let seen=0;
+    layout.emitters.forEach((em,i)=>{
+      const x=cx+(em.x-cx)*sc, y=cy+(em.y-cy)*sc;
+      const vis=clamp(Math.min(x+10, W+10-x, y+10, H-y)/60, 0, 1);
+      if(vis<=0) return;
+      seen=Math.max(seen, vis);
+      const to={x:W*0.5 + (i%2 ? 1 : -1)*Math.min(W*0.12, 70), y:H+6};
+      drawBeamLine({x,y}, to, i, vis*on, Math.min(sc, 2.5));
+    });
+    if(seen>0){
+      const g=ctx.createRadialGradient(W/2, H, 0, W/2, H, Math.min(W,H)*0.3);
+      g.addColorStop(0, `rgba(160,250,240,${0.4*seen*on})`); g.addColorStop(1, 'rgba(91,230,217,0)');
+      ctx.fillStyle=g; ctx.fillRect(0, H-Math.min(W,H)*0.3, W, Math.min(W,H)*0.3);
+    }
+  }
+  // the tractor field's glow around the edges of the screen
+  if(on>0){
+    const pulse=0.85+0.15*Math.sin(state.t*6);
+    const g=ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.3, W/2, H/2, Math.hypot(W,H)*0.55);
+    g.addColorStop(0, 'rgba(91,230,217,0)'); g.addColorStop(1, `rgba(91,230,217,${0.5*on*pulse})`);
+    ctx.fillStyle=g; ctx.fillRect(0, 0, W, H);
+  }
 }
 
 function spawnExplosion(x,y){
@@ -3116,7 +3167,6 @@ function update(){
   let dt=(now-lastT)/1000; lastT=now;
   dt=Math.min(dt,0.05);
   state.t+=dt;
-  state.rebootFlash = Math.max(0, (state.rebootFlash||0) - dt*1.8);
   if(state.failure && updateFailure(dt)){
     // the bay has split: only the wreckage moves now
     updateParticles(dt);
@@ -3706,12 +3756,22 @@ function draw(){
     stage.dataset.shaking='1';
   } else if(stage.dataset.shaking){ stage.style.transform=''; delete stage.dataset.shaking; }
 
-  if(state.failure && state.failure.split){ drawFailure(); ctx.restore(); return; }
-  // Walls and floor are on the background canvas (see resize). The floor used to be painted over the
-  // bottom of the iris; now the iris is clipped at the floor line instead.
+  if(state.failure && state.failure.split){
+    drawFailure();
+    if(state.failure.tractor) drawTractor();
+    ctx.restore(); return;
+  }
+  drawBay(1);
+  if(state.failure) drawFailureSeams();
+  ctx.restore();
+}
+// Everything in the bay except its walls and floor (those are on the background canvas, see resize).
+// `windowView`: how much of the view through the iris window to draw (the tractor sequence fades it in).
+function drawBay(windowView){
+  // The floor used to be painted over the bottom of the iris; now the iris is clipped at the floor line instead.
   ctx.save();
   ctx.beginPath(); ctx.rect(-W, -H, W*3, layout.floorTop+H); ctx.clip();
-  drawIrisWindow();
+  drawIrisWindow(windowView);
   ctx.restore();
   drawChute();
   drawEmitters();
@@ -3725,10 +3785,6 @@ function draw(){
   drawRockList(state.rocks.filter(r=>r.state==='carried'));
   drawParticles();
   drawAlienBubbles();
-  if(state.failure) drawFailureSeams();
-  if(state.rebootFlash>0){ ctx.fillStyle=`rgba(200,250,255,${state.rebootFlash*0.8})`; ctx.fillRect(0,0,W,H); }
-
-  ctx.restore();
 }
 
 const layerSky=makeLayer(), layerIris=makeLayer(), layerBarrel=makeLayer();
@@ -3742,10 +3798,13 @@ function drawVoidBackdrop(){
   ctx.fillRect(0,0,W,H);
 }
 
-function drawIrisWindow(){
+function drawIrisWindow(view){
   const {cx,cy,r}=layout.iris;
+  if(view===undefined) view=1;
+  if(view>0){
   ctx.save();
   ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU); ctx.clip();
+  ctx.globalAlpha=view;
   const blobs=state.nebulaBlobs;
   if(!blobs.gen) blobs.gen=++nebulaGen;
   paintLayer(layerSky, layoutGen+'|'+DPR+'|'+blobs.gen+'|'+state.nebulaHue, cx-r, cy-r, r*2, r*2, ()=>{
@@ -3767,17 +3826,20 @@ function drawIrisWindow(){
   state.stars.forEach(s=>{
     const sx=cx+Math.cos(s.a)*r*s.r, sy=cy+Math.sin(s.a)*r*s.r;
     const tw = reducedMotion ? 0.8 : 0.55+0.45*Math.sin(state.t*s.sp+s.tw);
-    ctx.globalAlpha = tw;
+    ctx.globalAlpha = tw*view;
     ctx.fillStyle='#dfeaff';
     ctx.beginPath(); ctx.arc(sx,sy,s.size,0,TAU); ctx.fill();
-    ctx.globalAlpha=1;
   });
+  ctx.globalAlpha=1;
 
-  drawRockList(state.rocks.filter(r=>r.state==='floating' || r.state==='ejected'));
-  drawAlienList(state.aliens.filter(a=>a.state==='floating' || a.state==='ejected' || a.state==='spaced'));
-  drawForceField();
+  if(view>=1){
+    drawRockList(state.rocks.filter(r=>r.state==='floating' || r.state==='ejected'));
+    drawAlienList(state.aliens.filter(a=>a.state==='floating' || a.state==='ejected' || a.state==='spaced'));
+    drawForceField();
+  }
 
   ctx.restore();
+  }
 
   // blades + ring + rivets: one layer, redrawn only while the iris is moving
   const RR=r*1.17+4;
@@ -3913,7 +3975,7 @@ function drawEmitters(){
   layout.emitters.forEach(e=>{
     ctx.save();
     ctx.translate(e.x,e.y);
-    const active = !!state.held;
+    const active = !!state.held || !!(state.failure && state.failure.tractor);
     ctx.fillStyle='#242b36';
     ctx.beginPath(); ctx.arc(0,0,13,0,TAU); ctx.fill();
     ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
@@ -4516,25 +4578,29 @@ function drawBarrel(anchor,i,noShadow){
   ctx.restore();
 }
 
+// One tractor beam from emitter `e` to `to`. `k` thickens it (the tractor sequence's close-up emitters).
+function drawBeamLine(e, to, idx, alpha, k){
+  k=k||1;
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  // glow as two soft wide strokes under the core line (a blur shadow costs far more)
+  ctx.beginPath();
+  ctx.moveTo(e.x,e.y);
+  ctx.lineTo(to.x,to.y);
+  ctx.lineCap='round';
+  ctx.strokeStyle='rgba(91,230,217,0.07)'; ctx.lineWidth=9*k; ctx.stroke();
+  ctx.strokeStyle='rgba(91,230,217,0.16)'; ctx.lineWidth=4*k; ctx.stroke();
+  ctx.strokeStyle='rgba(91,230,217,0.85)'; ctx.lineWidth=1*k; ctx.stroke();
+  const speed=2.4;
+  const tt=(state.t*speed+idx*0.27)%1;
+  const px=lerp(e.x,to.x,tt), py=lerp(e.y,to.y,tt);
+  ctx.fillStyle='#c9fff8';
+  ctx.beginPath(); ctx.arc(px,py,1.8*k,0,TAU); ctx.fill();
+  ctx.restore();
+}
 function drawBeams(){
   const r=state.held;
-  layout.emitters.forEach((e,idx)=>{
-    ctx.save();
-    // glow as two soft wide strokes under the core line (a blur shadow costs far more)
-    ctx.beginPath();
-    ctx.moveTo(e.x,e.y);
-    ctx.lineTo(r.x,r.y);
-    ctx.lineCap='round';
-    ctx.strokeStyle='rgba(91,230,217,0.07)'; ctx.lineWidth=9; ctx.stroke();
-    ctx.strokeStyle='rgba(91,230,217,0.16)'; ctx.lineWidth=4; ctx.stroke();
-    ctx.strokeStyle='rgba(91,230,217,0.85)'; ctx.lineWidth=1; ctx.stroke();
-    const speed=2.4;
-    const tt=(state.t*speed+idx*0.27)%1;
-    const px=lerp(e.x,r.x,tt), py=lerp(e.y,r.y,tt);
-    ctx.fillStyle='#c9fff8';
-    ctx.beginPath(); ctx.arc(px,py,1.8,0,TAU); ctx.fill();
-    ctx.restore();
-  });
+  layout.emitters.forEach((e,idx)=>drawBeamLine(e, r, idx, 1));
   ctx.save();
   ctx.fillStyle='rgba(91,230,217,0.18)';
   ctx.beginPath(); ctx.arc(r.x,r.y,r.size*r.scale*1.6,0,TAU); ctx.fill();
@@ -4857,17 +4923,13 @@ function takeAutoResumeFlag(){
 document.getElementById('newShiftBtn').addEventListener('click', ()=>beginShift(false));
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
-  // After a catastrophic failure the bay pulls itself back together first (see updateFailure).
-  if(state.failure && state.failure.split){ if(!state.failure.rebuild) startRebuild(); return; }
-  rebootShift();
+  // After a catastrophic failure we're tractored aboard a new ship first (see drawTractor).
+  if(state.failure && state.failure.split){ if(!state.failure.tractor) startTractor(); return; }
+  resetShiftState();
+  state.phase='playing';
 });
-function rebootShift(){
-  if(state.failure){
-    state.failure=null;
-    state.rebootFlash=1;
-    bgCanvas.style.visibility='';
-    document.getElementById('app').classList.remove('failed');
-  }
+// A fresh shift from Sector 1: new bay, full hull, no aliens.
+function resetShiftState(){
   state.hull=100; renderHull();
   state.scars=[]; paintBackground();
   state.particles=[];
@@ -4877,8 +4939,8 @@ function rebootShift(){
   state.leverDown=false;
   state.breaching=false;
   state.irisOpen=1; state.irisTarget=1;
-  state.phase='playing';
   startLevel(1);
+  state.barrels.forEach(b=>{ b.holo=0; });   // the holograms all power up together
 }
 const audioToggle=document.getElementById('audioToggle');
 let audioOn=true;
