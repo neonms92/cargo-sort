@@ -5,8 +5,8 @@
 //
 // window.CARGO_MODE:
 //   id                    save slot / protocol id (also add the mode to MODES below)
-//   title, intro          start screen: "CARGO BAY: <title> PROTOCOL" and the paragraph under it
-//   rules                 {READ, SORT, MATCH, EJECT, ...}: overrides/additions to the default rule lines
+//   title, intro          start screen: "CARGO BAY: <title> PROTOCOL" and the one line under it,
+//                         "Sort the <things> by their <property>." (everything else is left to discover)
 //   scanLabel             caption over the scanner readout
 //   pickValue(sector)     a random value for this sector: any plain object with a `key`
 //   makeItem(value, sector, labels)  how one rock shows that value: {rep, text, glyph?}
@@ -182,11 +182,7 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 .overlay p{
   max-width:560px; color:var(--text-mid); font-size:16px; line-height:1.55; margin:0 0 8px;
 }
-.overlay .rule{
-  display:flex; align-items:center; gap:10px; color:var(--text-mid); font-size:15px; margin:4px 0;
-}
-.overlay .rule b{color:var(--cyan); font-family:var(--font-display); font-size:11px; letter-spacing:1.5px; min-width:96px; text-align:left;}
-#rulesBox{margin:18px 0 26px; text-align:left; max-width:680px;}
+#intro{margin:4px 0 30px; font-size:18px;}
 .bigBtn{
   font-family:var(--font-display); font-weight:700; letter-spacing:3px; font-size:15px;
   color:#04121a; background:linear-gradient(180deg, var(--cyan), #2fb5a8);
@@ -241,13 +237,6 @@ function injectShell(){
   const style = document.createElement('style');
   style.textContent = ENGINE_CSS;
   document.head.appendChild(style);
-  const rules = Object.assign({
-    SORT:  "The first rock in an empty barrel sets what that barrel takes.",
-    MATCH: "A rock that doesn't match an armed barrel triggers a hull-damaging blowout.",
-    EJECT: "Tap a barrel to jettison its contents. Drag a rock through the open iris to jettison just that rock.",
-    AIRLOCK: "Aliens bounce off the iris. To send one home, drop it in the airlock and press LAUNCH.",
-  }, MODE.rules);
-  const order = ['READ','SORT','MATCH','EJECT'].filter(k=>rules[k]).concat(Object.keys(rules).filter(k=>!['READ','SORT','MATCH','EJECT'].includes(k)));
   const protocols = MODES.map(m => m.id===MODE.id
     ? `<span class="cur">${esc(m.name)}</span>`
     : `<a href="${esc(SITE_ROOT + m.path)}">${esc(m.name)}</a>`).join('<span class="sep">·</span>');
@@ -291,10 +280,7 @@ function injectShell(){
   <div id="startOverlay" class="overlay">
     <div class="ship">S.S. KESTREL-9 — CARGO DIVISION</div>
     <h1>CARGO BAY: <span class="accent">${esc(MODE.title)}</span> PROTOCOL</h1>
-    <p>${esc(MODE.intro)}</p>
-    <div id="rulesBox">
-${order.map(k=>`      <div class="rule"><b>${esc(k)}</b> ${esc(rules[k])}</div>`).join('\n')}
-    </div>
+    <p id="intro">${esc(MODE.intro)}</p>
     <button class="bigBtn" id="startBtn">BEGIN SHIFT</button>
     <button class="linkBtn hidden" id="newShiftBtn">START A NEW SHIFT INSTEAD</button>
     <div id="protocolSwitch"><span class="lbl">PROTOCOL</span>${protocols}</div>
