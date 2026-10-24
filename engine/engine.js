@@ -1975,6 +1975,9 @@ function maybeTriggerAbduct(a, prevX){
 // Anyone the arm is holding when a job is torn down (reboot/level reset) is put back off-screen.
 function releaseArmAlien(a){
   if(!a || (a.state!=='jammed' && a.state!=='abducted')) return;
+  // It's about to jump off-screen: whatever it was saying stays put where it was said, rather
+  // than snapping across to the screen edge with it.
+  if(a.bubbleT>0) a.bubbleAt = {x:a.x, y:a.y - a.size*a.scale - 12};
   a.state='settled'; a.walkPhase='gap'; a.waitTimer=ALIEN_TRACK_GAP_SECONDS; a.track=1;
   a.x=a.baseX = a.walksReverse ? -ALIEN_TRACK_EDGE_MARGIN*3 : W + ALIEN_TRACK_EDGE_MARGIN*3;
 }
@@ -2672,6 +2675,7 @@ function update(){
       a.scale = Math.max(0.05, a.scale - dt*0.5);
     }
     if(a.bubbleT>0) a.bubbleT = Math.max(0, a.bubbleT-dt);
+    if(a.bubbleT<=0) a.bubbleAt = null;
   }
   updateAlienStacks(dt);
   state.aliens = state.aliens.filter(a=> !(a.state==='ejected' && (a.opacity<=0.03 || a.scale<=0.06)) && a.state!=='gone');
@@ -2894,21 +2898,14 @@ function drawSpeechBubble(x,y,text){
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(text, bx+w/2, by+h/2+1);
 }
-// Only aliens you can see talk. Bubbles are kept on screen (drawSpeechBubble), so one belonging to
-// an alien that has left the bay (walked or been thrown off an edge, carried below by the arm, now
-// waiting in the off-screen gap) would otherwise hang at the screen edge.
-function alienBubbleVisible(a){
-  if(alienIsOffscreen(a) || a.walkPhase==='hiding') return false;
-  const rad = a.size*a.scale;
-  return a.x + rad >= 0 && a.x - rad <= W;
-}
 function drawAlienBubbles(){
   state.aliens.forEach(a=>{
-    if(a.bubbleT>0 && a.message && alienBubbleVisible(a)){
+    if(a.bubbleT>0 && a.message){
       const op = a.bubbleT>0.6 ? 1 : a.bubbleT/0.6;
       ctx.save();
       ctx.globalAlpha=op;
-      drawSpeechBubble(a.x, a.y - a.size*a.scale - 12, a.message);
+      const at = a.bubbleAt || {x:a.x, y:a.y - a.size*a.scale - 12};
+      drawSpeechBubble(at.x, at.y, a.message);
       ctx.restore();
     }
   });
@@ -3839,7 +3836,7 @@ const SaveGame = (()=>{
     if(str.startsWith('gz1:')) return JSON.parse(new TextDecoder().decode(await pipe(fromB64(str.slice(4)), new DecompressionStream('gzip'))));
     throw new Error('unknown save format');
   }
-  const ALIEN_SKIP = new Set(['avatarImg','ridingOn','rider']);
+  const ALIEN_SKIP = new Set(['avatarImg','ridingOn','rider','bubbleAt']);
   function snapshot(){
     const aliens=[];
     for(const a of state.aliens){
