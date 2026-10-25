@@ -732,10 +732,26 @@ function paintBackground(){
   try{ drawBayStructure(); drawFloor(); drawHullDamage(); } finally { ctx=main; }
 }
 window.addEventListener('resize', resize);
+// The airlock and the wall scoreboard are fitted around the HUD panels (computeLayout measures them),
+// so lay out again whenever those move or change size: the page's styles or fonts arriving late,
+// larger system text, a longer score.
+const hudEls=['hullPanel','audioToggle','sectorPanel'].map(id=>document.getElementById(id)).filter(Boolean);
+const hudRects=()=>hudEls.map(el=>{ const r=el.getBoundingClientRect(); return [r.left,r.top,r.right,r.bottom].map(Math.round).join(','); }).join('|');
+let hudLaidOut='';
+if(window.ResizeObserver){
+  let queued=false;
+  const ro=new ResizeObserver(()=>{
+    if(queued) return;
+    queued=true;
+    requestAnimationFrame(()=>{ queued=false; if(hudRects()!==hudLaidOut) resize(); });
+  });
+  hudEls.forEach(el=>ro.observe(el, {box:'border-box'}));
+}
 
 let layout={};
 function computeLayout(){
   layoutGen++;
+  hudLaidOut=hudRects();
   const cx=W*0.5, cy=H*0.34;
   const irisR = Math.min(W,H)*0.225;
   layout.iris = {cx,cy,r:irisR};
