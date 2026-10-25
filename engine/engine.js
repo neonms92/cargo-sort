@@ -701,6 +701,10 @@ function paintLayer(L, key, x, y, w, h, fn, dx, dy){
     else cv=document.createElement('canvas');
     cv.width=cw; cv.height=ch;
     const o=cv.getContext('2d');
+    if(!o){   // the browser refused another canvas (out of canvas memory): draw it directly instead
+      ctx.save(); ctx.translate(tx-x, ty-y); fn(); ctx.restore();
+      return;
+    }
     o.setTransform(DPR,0,0,DPR,fx-x*DPR,fy-y*DPR);
     const main=ctx; ctx=o;
     try{ fn(); } finally { ctx=main; }
@@ -4458,34 +4462,29 @@ function drawChute(){
 }
 // The scoreboard: BEST and the top score (the shift in progress, once it's ahead), on a softly
 // glowing screen that flickers now and then. Tapping it opens the best shifts.
-// It only changes when the score or the flicker does, so it's a cached layer (the glowing digits are a
-// blur shadow, which is costly to redraw every frame).
-const layerScoreboard=makeLayer(2);
 function drawScoreboard(){
   const b=layout.scoreboard; if(!b) return;
   const x0=b.x-b.w/2, y0=b.y-b.h/2, F=Math.max(5, b.w*0.07);
-  const flick = Math.sin(state.t*23)*Math.sin(state.t*1.7) > 0.93 ? 0.55 : 1;
-  const best = HighScores.top();
-  const top = Math.max(best, state.phase==='intro' ? 0 : state.score);
-  const txt = top ? top.toLocaleString('en-US') : '— —';
-  const m=F+2;
-  paintLayer(layerScoreboard, layoutGen+'|'+DPR+'|'+holoFontGen+'|'+txt+'|'+flick, x0-m, y0-m, b.w+m*2, b.h+m*2, ()=>{
-    ctx.save();
-    ctx.fillStyle='#1b212b';
-    roundRectPath(x0-F, y0-F, b.w+F*2, b.h+F*2, 6); ctx.fill();
-    ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
-    ctx.fillStyle='#151b23';
-    [[x0-F*0.5,y0-F*0.5],[x0+b.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+b.h+F*0.5],[x0+b.w+F*0.5,y0+b.h+F*0.5]].forEach(([bx,by])=>{
-      ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
+  ctx.save();
+  ctx.fillStyle='#1b212b';
+  roundRectPath(x0-F, y0-F, b.w+F*2, b.h+F*2, 6); ctx.fill();
+  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='#151b23';
+  [[x0-F*0.5,y0-F*0.5],[x0+b.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+b.h+F*0.5],[x0+b.w+F*0.5,y0+b.h+F*0.5]].forEach(([bx,by])=>{
+    ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
   });
   const g=ctx.createLinearGradient(0,y0,0,y0+b.h);
   g.addColorStop(0,'#0d2a2a'); g.addColorStop(1,'#071516');
   ctx.fillStyle=g; ctx.fillRect(x0,y0,b.w,b.h);
+  const flick = Math.sin(state.t*23)*Math.sin(state.t*1.7) > 0.93 ? 0.55 : 1;
   ctx.globalAlpha = flick;
+  const best = HighScores.top();
+  const top = Math.max(best, state.phase==='intro' ? 0 : state.score);
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.font=`700 ${Math.max(5, Math.min(9, b.h*0.2)).toFixed(1)}px Orbitron, sans-serif`;
   ctx.fillStyle='rgba(91,230,217,0.75)';
   ctx.fillText('BEST', b.x, y0+b.h*0.27);
+  const txt = top ? top.toLocaleString('en-US') : '— —';
   ctx.font='900 20px Orbitron, sans-serif';
   const fit = Math.min(1, (b.w-10)/ctx.measureText(txt).width);
   ctx.font=`900 ${Math.max(8, Math.min(20, b.h*0.36, 20*fit)).toFixed(1)}px Orbitron, sans-serif`;
@@ -4499,7 +4498,6 @@ function drawScoreboard(){
   ctx.strokeStyle='rgba(91,230,217,0.55)'; ctx.lineWidth=1.5;
   ctx.strokeRect(x0+0.5,y0+0.5,b.w-1,b.h-1);
   ctx.restore();
-  });
 }
 function hitScoreboard(pos){
   const b=layout.scoreboard; if(!b) return false;
