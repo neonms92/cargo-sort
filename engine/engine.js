@@ -239,6 +239,18 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 .rosterFace.hl{transform:scale(1.5); opacity:1;}
 .rosterName{font-family:var(--font-display); font-size:10px; letter-spacing:2px; color:var(--cyan); min-height:13px;}
 .roster.empty .rosterName{color:var(--text-dim);}
+#scoresList{display:flex; flex-direction:column; gap:8px;}
+/* The wall display's dialog: the same list, the shift in progress included, over the running bay. */
+#scoresDialog{position:absolute; inset:0; z-index:35; display:flex; align-items:center; justify-content:center;
+  padding:16px; background:rgba(4,6,10,0.72); touch-action:pan-y;}
+#scoresDialog.hidden{display:none;}
+#scoresDialog .dlg{width:min(560px,100%); max-height:100%; overflow-y:auto; padding:18px 18px 20px; border-radius:6px;
+  display:flex; flex-direction:column; align-items:center; text-align:center; border-color:var(--cyan-dim);}
+#scoresDialog .ship{font-family:var(--font-display); font-size:10px; letter-spacing:3px; color:var(--amber); margin-bottom:10px;}
+#scoresDialog h2{font-family:var(--font-display); font-weight:900; font-size:20px; letter-spacing:3px; margin:0 0 14px;
+  color:var(--text-hi); text-shadow:0 0 18px rgba(91,230,217,0.35);}
+#scoresList{width:100%; margin-bottom:18px;}
+#scoresDialog .bigBtn{padding:11px 30px; font-size:13px;}
 
 
 @media (prefers-reduced-motion: reduce){
@@ -320,6 +332,15 @@ function injectShell(){
     <button class="bigBtn" id="startBtn">BEGIN SHIFT</button>
     <button class="linkBtn hidden" id="newShiftBtn">START A NEW SHIFT INSTEAD</button>
     <div id="protocolSwitch"><span class="lbl">PROTOCOL</span>${protocols}</div>
+  </div>
+
+  <div id="scoresDialog" class="hidden">
+    <div class="dlg panel notch">
+      <div class="ship">S.S. KESTREL-9 — CARGO DIVISION</div>
+      <h2>BEST SHIFTS</h2>
+      <div id="scoresList"></div>
+      <button class="bigBtn" id="scoresClose">CLOSE</button>
+    </div>
   </div>
 
   <div id="endOverlay" class="overlay hidden">
@@ -789,6 +810,28 @@ function computeLayout(){
   const boxX = roomR - frame - bw/2, boxY = roomBottom - frame - bh/2;
   layout.chute = {x:boxX, y:boxY, w:bw, h:bh};
   layout.chuteBtn = {x:boxX, y:boxY - bh/2 - frame - GAP - BTN_H/2, w:bw, h:BTN_H};
+
+  // Scoreboard: a small wall display right of the iris, level with the airlock where there's room.
+  // It keeps clear of the sector HUD and the beam emitter above, and the lever, back-right barrel
+  // and its hologram below.
+  const b1 = layout.barrels4[1], h1 = layout.holos[1], L = layout.lever;
+  const sbL = cx + irisR*1.2 + 10, SB_MAX = 104, SB_ASPECT = 0.62;
+  const sbW = Math.max(40, Math.min(SB_MAX, W - 10 - sbL - frameOf(SB_MAX)*2));
+  const sbR = sbL + frameOf(sbW)*2 + sbW;
+  let sbTop = 14;
+  ['audioToggle','sectorPanel'].forEach(id=>{
+    const el=document.getElementById(id); if(!el) return;
+    const r=el.getBoundingClientRect();
+    if(r.left - 8 < sbR) sbTop = Math.max(sbTop, r.bottom + 14);
+  });
+  const e1 = layout.emitters[1];
+  if(e1.x - 15 < sbR) sbTop = Math.max(sbTop, e1.y + 15 + 6);
+  let sbBottom = L.y - L.h - 14;
+  [{l:b1.x-R0*1.1, r:b1.x+R0*1.1, top:b1.y-layout.barrelH-R0*0.45}, {l:h1.x-h1.w/2, r:h1.x+h1.w/2, top:h1.y-h1.h/2}]
+    .forEach(o=>{ if(o.r > sbL && o.l < sbR) sbBottom = Math.min(sbBottom, o.top - 8); });
+  const sbF = frameOf(sbW), sbH = Math.max(28, Math.min(sbW*SB_ASPECT, sbBottom - sbTop - sbF*2));
+  const sbY = clamp(boxY, sbTop + sbF + sbH/2, Math.max(sbTop + sbF + sbH/2, sbBottom - sbF - sbH/2));
+  layout.scoreboard = {x: sbL + sbF + sbW/2, y: sbY, w: sbW, h: sbH};
 }
 // Where the wrist sits when the pincers are clamped on the lid of a barrel standing at `anchor`.
 function armGrabWrist(anchor){
@@ -1361,6 +1404,7 @@ function damageHull(amount, site){
   state.shake = Math.min(state.shake+18, 26);
   if(state.hull<=0 && state.phase==='playing' && !state.breaching){
     recordShift();
+    document.getElementById('scoresDialog').classList.add('hidden');
     state.breaching = true;
     SaveGame.clear(); // the shift is lost; don't let a reload undo it
     startHullFailure();
@@ -1389,7 +1433,8 @@ function scoreDrop(r){
   state.streak++;
 }
 function resetScore(){ state.score=0; state.streak=0; state.roster=[]; renderScore(); }
-// The shift's roster: each alien once, as it first came aboard, with its face and name.
+// The shift's roster: each alien once, from when it first came aboard (beamed in, or cloned) with its
+// face and name, whether or not it's on screen now. One sent out of the airlock is struck off.
 function enlistAlien(a){
   if(state.roster.some(m=>m.id===a.id)) return;
   state.roster.push({id:a.id, name:a.name, src:a.avatarImg ? a.avatarImg.src : null, face:a.face});
@@ -1401,12 +1446,15 @@ const HighScores = (()=>{
   function load(){
     try{ const l=JSON.parse(localStorage.getItem(KEY)||'[]'); return Array.isArray(l) ? l : []; }catch(e){ return []; }
   }
+  let topCache = null;
   function record(entry){
     const list = load().concat([entry]).sort((a,b)=> b.score-a.score || a.t-b.t).slice(0, KEEP);
     try{ localStorage.setItem(KEY, JSON.stringify(list)); }catch(e){ /* storage blocked: still show it */ }
+    topCache = list.length ? list[0].score : 0;
     return list;
   }
-  return {load, record};
+  function top(){ if(topCache===null){ const l=load(); topCache = l.length ? l[0].score : 0; } return topCache; }
+  return {load, record, top};
 })();
 let lastShift = null;   // this shift's entry once it has ended, to light it up in the list
 function recordShift(){
@@ -1421,18 +1469,41 @@ function renderBestScores(){
   const list = HighScores.load();
   if(!list.length) return;
   box.insertAdjacentHTML('beforeend', '<div class="lbl">BEST SHIFTS</div>');
+  renderScoreRows(box, list.map((e,i)=>({e, rank:i+1, cur: !!lastShift && e.t===lastShift.t})));
+}
+// The best five with the shift in progress ranked among them (after them, if it hasn't made the cut).
+function bestWithCurrentRun(){
+  const now = {score:state.score, sector:state.sector, roster:state.roster, now:true};
+  const list = HighScores.load();
+  const rank = list.filter(e=>e.score>=now.score).length;
+  const rows = list.map((e,i)=>({e, rank:i+1+(i>=rank ? 1 : 0)}));
+  rows.splice(rank, 0, {e:now, rank:rank+1, cur:true});
+  return rows.length>5 && rank<5 ? rows.slice(0,5) : rows;
+}
+function renderScoreRows(box, rows){
   const strips = [];
-  list.forEach((e,i)=>{
+  rows.forEach(({e, rank, cur})=>{
     const row = document.createElement('div');
-    row.className = 'bestRow' + (lastShift && e.t===lastShift.t ? ' cur' : '');
-    row.innerHTML = `<div class="rank">${i+1}</div><div class="tally"><div class="pts">${Number(e.score).toLocaleString('en-US')}</div>`
-      + `<div class="sec">SECTOR ${String(e.sector).padStart(2,'0')}</div></div>`;
+    row.className = 'bestRow' + (cur ? ' cur' : '');
+    row.innerHTML = `<div class="rank">${rank}</div><div class="tally"><div class="pts">${Number(e.score).toLocaleString('en-US')}</div>`
+      + `<div class="sec">SECTOR ${String(e.sector).padStart(2,'0')}${e.now ? ' · NOW' : ''}</div></div>`;
     const roster = buildRoster(e.roster||[]);
     row.appendChild(roster.el);
     if(roster.update) strips.push(roster.update);
     box.appendChild(row);
   });
   requestAnimationFrame(()=>strips.forEach(f=>f()));   // once laid out
+}
+function openScoresDialog(){
+  const box = document.getElementById('scoresList');
+  box.innerHTML = '';
+  renderScoreRows(box, bestWithCurrentRun());
+  document.getElementById('scoresDialog').classList.remove('hidden');
+  AudioEngine.uiBlip(520);
+}
+function closeScoresDialog(){
+  document.getElementById('scoresDialog').classList.add('hidden');
+  AudioEngine.uiBlip(330);
 }
 // A sideways-scrolling strip of faces. Whichever face sits in the middle grows and shows its name.
 function buildRoster(roster){
@@ -1931,6 +2002,8 @@ function splitBay(){
   layout.emitters.forEach(e=>add(e.x-16, e.y-16, 32, 32, ()=>{ ctx.save(); ctx.translate(e.x,e.y); ctx.fillStyle='#242b36'; ctx.beginPath(); ctx.arc(0,0,13,0,TAU); ctx.fill(); ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke(); ctx.fillStyle='#3a4351'; ctx.beginPath(); ctx.arc(0,0,5.5,0,TAU); ctx.fill(); ctx.restore(); }));
   const c=layout.chute, cb=layout.chuteBtn, F=Math.max(5, c.w*0.07);
   add(c.x-c.w/2-F-4, cb.y-cb.h/2-4, c.w+F*2+8, (c.y+c.h/2+F+4)-(cb.y-cb.h/2-4), drawChute);
+  const sb=layout.scoreboard, sbF=Math.max(5, sb.w*0.07);
+  add(sb.x-sb.w/2-sbF-3, sb.y-sb.h/2-sbF-3, sb.w+sbF*2+6, sb.h+sbF*2+6, drawScoreboard);
   const b=layout.redButton;
   add(b.x-b.r*1.6-3, b.y-b.r*1.6-3, b.r*3.2+6, b.r*3.2+6, drawRedButton);
   const L=layout.lever;
@@ -2228,6 +2301,11 @@ function onDown(e){
   if(state.held) return; // already dragging a rock — ignore extra pointer/touch events
   AudioEngine.init();
   const pos=localPos(e);
+  if(hitScoreboard(pos)){
+    e.preventDefault();
+    openScoresDialog();
+    return;
+  }
   if(hitChuteButton(pos)){
     e.preventDefault();
     launchChute();
@@ -2251,6 +2329,7 @@ function onDown(e){
     e.preventDefault();
     breakStackAt(a); // everyone above tumbles off; anyone below keeps walking
     if(a.state==='chute'){ a.message=choice(ALIEN_CHUTE_RESCUE_MESSAGES); a.bubbleT=2.5; a.tumbled=true; }
+    enlistAlien(a);   // beamed aboard: on the roster from here, greeting or not
     state.held=a;
     a.state='held';
     state.dragLast={x:pos.x,y:pos.y};
@@ -2516,7 +2595,6 @@ function putAlienInChute(a){
   a.walkPhase=null; a.fixitMode=false; a.tumbled=false; a.hideJumpOut=false;
   a.fvx=a.fvy=0;
   a.greeted = true;
-  enlistAlien(a);
   a.message = choice(ALIEN_CHUTE_ENTER_MESSAGES);
   a.bubbleT = 3;
   a.chuteTalkT = rand(7,11);
@@ -2528,6 +2606,7 @@ function launchChute(){
   if(!a || a.state!=='chute'){ AudioEngine.uiBlip(160); return; }
   a.state='launching';
   a.launchT=0;
+  state.roster = state.roster.filter(m=>m.id!==a.id);   // jettisoned: off the roster
   a.chuteScale=a.scale;
   a.bubbleT=0;
   ch.flash=1;
@@ -3930,6 +4009,7 @@ function drawBay(windowView){
   drawIrisWindow(windowView);
   ctx.restore();
   drawChute();
+  drawScoreboard();
   drawEmitters();
   drawRedButton();
   drawLever();
@@ -4306,6 +4386,50 @@ function drawChute(){
   ctx.shadowBlur=0;
   ctx.restore();
   drawChuteButton(!!occ && occ.state==='chute');
+}
+// The scoreboard: BEST and the top score (the shift in progress, once it's ahead), on a softly
+// glowing screen that flickers now and then. Tapping it opens the best shifts.
+function drawScoreboard(){
+  const b=layout.scoreboard; if(!b) return;
+  const x0=b.x-b.w/2, y0=b.y-b.h/2, F=Math.max(5, b.w*0.07);
+  ctx.save();
+  ctx.fillStyle='#1b212b';
+  roundRectPath(x0-F, y0-F, b.w+F*2, b.h+F*2, 6); ctx.fill();
+  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='#151b23';
+  [[x0-F*0.5,y0-F*0.5],[x0+b.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+b.h+F*0.5],[x0+b.w+F*0.5,y0+b.h+F*0.5]].forEach(([bx,by])=>{
+    ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
+  });
+  const g=ctx.createLinearGradient(0,y0,0,y0+b.h);
+  g.addColorStop(0,'#0d2a2a'); g.addColorStop(1,'#071516');
+  ctx.fillStyle=g; ctx.fillRect(x0,y0,b.w,b.h);
+  const flick = Math.sin(state.t*23)*Math.sin(state.t*1.7) > 0.93 ? 0.55 : 1;
+  ctx.globalAlpha = flick;
+  const best = HighScores.top();
+  const top = Math.max(best, state.phase==='intro' ? 0 : state.score);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`700 ${Math.max(5, Math.min(9, b.h*0.2)).toFixed(1)}px Orbitron, sans-serif`;
+  ctx.fillStyle='rgba(91,230,217,0.75)';
+  ctx.fillText('BEST', b.x, y0+b.h*0.27);
+  const txt = top ? top.toLocaleString('en-US') : '— —';
+  ctx.font='900 20px Orbitron, sans-serif';
+  const fit = Math.min(1, (b.w-10)/ctx.measureText(txt).width);
+  ctx.font=`900 ${Math.max(8, Math.min(20, b.h*0.36, 20*fit)).toFixed(1)}px Orbitron, sans-serif`;
+  ctx.fillStyle='#ffb648'; ctx.shadowColor='rgba(255,182,72,0.6)'; ctx.shadowBlur=8;
+  ctx.fillText(txt, b.x, y0+b.h*0.64);
+  ctx.shadowBlur=0; ctx.globalAlpha=1;
+  // scanlines and a glass sheen
+  ctx.fillStyle='rgba(0,0,0,0.22)';
+  for(let y=y0+1; y<y0+b.h; y+=3) ctx.fillRect(x0, y, b.w, 1);
+  ctx.fillStyle='rgba(150,215,255,0.06)'; ctx.fillRect(x0, y0, b.w, b.h*0.45);
+  ctx.strokeStyle='rgba(91,230,217,0.55)'; ctx.lineWidth=1.5;
+  ctx.strokeRect(x0+0.5,y0+0.5,b.w-1,b.h-1);
+  ctx.restore();
+}
+function hitScoreboard(pos){
+  const b=layout.scoreboard; if(!b) return false;
+  const F=Math.max(5, b.w*0.07);
+  return Math.abs(pos.x-b.x) <= b.w/2+F && Math.abs(pos.y-b.y) <= b.h/2+F;
 }
 function drawChuteButton(armed){
   const b=layout.chuteBtn, ch=state.chute;
@@ -4994,6 +5118,7 @@ function restoreGame(d){
     if(n>=ROCK_ID) ROCK_ID=n+1;
   });
   state.aliens=aliens;
+  aliens.forEach(a=>{ if(a.state!=='floating') enlistAlien(a); });   // anyone aboard that a save missed
   updateAlienStacks(0);
   state.spawnTimer=0;
   for(let i=0;i<4;i++) trySpawnRandom();
@@ -5080,6 +5205,8 @@ function takeAutoResumeFlag(){
   setInterval(check, 30000);
 })();
 document.getElementById('newShiftBtn').addEventListener('click', ()=>beginShift(false));
+document.getElementById('scoresClose').addEventListener('click', closeScoresDialog);
+document.getElementById('scoresDialog').addEventListener('click', e=>{ if(e.target.id==='scoresDialog') closeScoresDialog(); });
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
   // After a catastrophic failure we're tractored aboard a new ship first (see drawTractor).
