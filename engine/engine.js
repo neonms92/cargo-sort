@@ -386,7 +386,7 @@ const AudioEngine = (function(){
     if(ctx) return;
     ctx = new (window.AudioContext||window.webkitAudioContext)();
     master = ctx.createGain();
-    master.gain.value = 0.85;
+    master.gain.value = enabled?0.85:0;
     master.connect(ctx.destination);
     const len = ctx.sampleRate*1.2;
     noiseBuffer = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -935,7 +935,7 @@ const state={
   rumble:{t:0, dur:0, next:2, shake:0},
   irisSparkT:0,
   // Exhaust from the four thrusters, one per barrel slot (see updatePlumes).
-  plumes:[0,1,2,3].map(()=>({lit:false, p:0, flare:0})),
+  plumes:[0,1,2,3].map(()=>({lit:false, p:0, flare:0, embers:[]})),
   failure:null,
   warnT:0,
   irisOpen:1, irisTarget:1,
@@ -2207,10 +2207,22 @@ function updatePlumes(dt){
   const tr=state.transition, jumping=!!tr && tr.step!=='closing';
   state.plumes.forEach((pl,i)=>{
     const lit = !jumping && !state.failure && state.barrels[i].status==='gone';
-    if(lit && !pl.lit){ pl.flare=1; AudioEngine.thrusterIgnite(); }
+    if(lit && !pl.lit){
+      pl.flare=1; AudioEngine.thrusterIgnite();
+      // a few embers coughed out as it lights, drifting in along the plume (in iris radii: d from
+      // the center, s across the plume; per second for the speeds)
+      for(let k=randInt(4,5); k>0; k--)
+        pl.embers.push({d:rand(1.05,1.15), s:rand(-0.06,0.06), vd:-rand(0.35,0.75), vs:rand(-0.12,0.12),
+          life:0, maxLife:rand(0.9,1.5), size:rand(1.4,2.4)});
+    }
     pl.lit=lit;
     pl.p = lit ? Math.min(1, pl.p+dt*2.5) : Math.max(0, pl.p-dt*4);
     pl.flare = Math.max(0, pl.flare-dt*1.6);
+    if(pl.embers.length){
+      const drag=Math.exp(-dt*1.2);
+      for(const e of pl.embers){ e.d+=e.vd*dt; e.s+=e.vs*dt; e.vd*=drag; e.vs*=drag; e.life+=dt; }
+      pl.embers = pl.embers.filter(e=>e.life<e.maxLife);
+    }
   });
 }
 function updateIrisSparks(dt){
@@ -4509,7 +4521,7 @@ function drawIrisWindow(view){
 const PLUME_ANGLES=[-0.75*Math.PI, -0.25*Math.PI, 0.75*Math.PI, 0.25*Math.PI];
 let plumeSprite=null;
 function drawPlumes(view){
-  if(!state.plumes.some(pl=>pl.p>0.01)) return;
+  if(!state.plumes.some(pl=>pl.p>0.01 || pl.embers.length)) return;
   const {cx,cy,r}=layout.iris, L=r*0.72, Wd=r*0.22;
   const key=L.toFixed(1)+'|'+DPR;
   if(!plumeSprite || plumeSprite.key!==key){
@@ -4542,6 +4554,17 @@ function drawPlumes(view){
     ctx.rotate(a+Math.PI); ctx.scale(fl*(1+pl.flare*0.25), 1);
     ctx.drawImage(plumeSprite.cv, 0, -Wd, L, Wd*2);
     ctx.restore();
+  });
+  state.plumes.forEach((pl,i)=>{
+    const a=PLUME_ANGLES[i], ux=Math.cos(a), uy=Math.sin(a);
+    for(const e of pl.embers){
+      const x=cx+(ux*e.d - uy*e.s)*r, y=cy+(uy*e.d + ux*e.s)*r;
+      const k=1-e.life/e.maxLife;
+      ctx.globalAlpha=view*k*0.35; ctx.fillStyle='#ff7a2a';
+      ctx.beginPath(); ctx.arc(x,y,e.size*2.6,0,TAU); ctx.fill();
+      ctx.globalAlpha=view*Math.min(1,k*1.4); ctx.fillStyle='#ffb35c';
+      ctx.beginPath(); ctx.arc(x,y,e.size,0,TAU); ctx.fill();
+    }
   });
   ctx.restore();
 }
@@ -5749,12 +5772,19 @@ function resetShiftState(){
   startLevel(1);
   state.barrels.forEach(b=>{ b.holo=0; });   // the holograms all power up together
 }
-const audioToggle=document.getElementById('audioToggle');
+// Sounds Enabled is saved on its own, beside the shift's save, so it outlasts a lost or new shift.
+const audioToggle=document.getElementById('audioToggle'), SOUND_KEY='cargoSort.sound';
 let audioOn=true;
-audioToggle.addEventListener('click', ()=>{
-  audioOn=!audioOn;
+try{ audioOn = localStorage.getItem(SOUND_KEY)!=='off'; }catch(e){}
+function applyAudio(){
   AudioEngine.setEnabled(audioOn);
   audioToggle.setAttribute('aria-checked', String(audioOn));
+}
+applyAudio();
+audioToggle.addEventListener('click', ()=>{
+  audioOn=!audioOn;
+  applyAudio();
+  try{ localStorage.setItem(SOUND_KEY, audioOn ? 'on' : 'off'); }catch(e){ /* storage blocked: just this visit */ }
 });
 document.getElementById('secretSpawnBtn').addEventListener('click', ()=>{
   // Debug spawn: straight into the off-screen gap (as if it had just walked off track 1), so it
