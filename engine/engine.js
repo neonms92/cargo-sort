@@ -1492,10 +1492,12 @@ function bestWithCurrentRun(){
 function renderScoreRows(box, rows){
   const strips = [];
   rows.forEach(({e, rank, cur})=>{
+    const crew = (e.roster||[]).length;
     const row = document.createElement('div');
     row.className = 'bestRow' + (cur ? ' cur' : '');
     row.innerHTML = `<div class="rank">${rank}</div><div class="tally"><div class="pts">${Number(e.score).toLocaleString('en-US')}</div>`
-      + `<div class="sec">SECTOR ${String(e.sector).padStart(2,'0')}${e.now ? ' · NOW' : ''}</div></div>`;
+      + `<div class="sec">SECTOR ${String(e.sector).padStart(2,'0')}${e.now ? ' · NOW' : ''}</div>`
+      + `<div class="sec">${crew} ALIEN${crew===1 ? '' : 'S'}</div></div>`;
     const roster = buildRoster(e.roster||[]);
     row.appendChild(roster.el);
     if(roster.update) strips.push(roster.update);
