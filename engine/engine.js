@@ -3207,7 +3207,7 @@ function updateAbductJob(arm, job, u, e){
       if(!job.missed){
         arm.wrist=alienGrabWrist(a);
         if(u>=1){
-          a.state='abducted'; a.walkPhase=null; a.fvx=a.fvy=0; a.abductMarked=false;
+          a.state='abducted'; a.walkPhase=null; a.fvx=a.fvy=0;
           a.message=choice(ALIEN_ABDUCT_MESSAGES); a.bubbleT=3;
           job.grabScale=a.scale; job.grabFloorSc=floorScaleAt(arm.wrist.y);
           AudioEngine.uiBlip(180);
@@ -3228,8 +3228,9 @@ function updateAbductJob(arm, job, u, e){
       arm.wrist={x:from.x, y:from.y+d};
       if(a.state==='abducted'){
         hang();
-        // Gone below: carry on exactly as if it had just walked off the end of track 1.
-        if(u>=1){ releaseArmAlien(a); a.scale=a.targetScale=ALIEN_TRACK1_SCALE; }
+        // Gone below: carry on exactly as if it had just walked off the end of track 1. Only now,
+        // with the grab complete, does its shipping label come off.
+        if(u>=1){ releaseArmAlien(a); a.scale=a.targetScale=ALIEN_TRACK1_SCALE; a.abductMarked=false; }
       }
       break;
     }
