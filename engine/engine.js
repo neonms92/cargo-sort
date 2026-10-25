@@ -1440,6 +1440,15 @@ function enlistAlien(a){
   state.roster.push({id:a.id, name:a.name, src:a.avatarImg ? a.avatarImg.src : null, face:a.face});
 }
 
+// An alien's hello, the moment it's first beamed aboard: worth 100, and it joins the roster.
+function greetAlien(a){
+  a.message = choice(ALIEN_MESSAGES);
+  a.bubbleT = 3.5;
+  a.greeted = true;
+  enlistAlien(a);
+  addScore(GREETING_POINTS);
+}
+
 // Each protocol keeps its own best five shifts, each with the aliens who came aboard.
 const HighScores = (()=>{
   const KEY = MODE.id==='o2' ? 'cargoSort.best' : 'cargoSort.'+MODE.id+'.best', KEEP = 5;
@@ -2329,7 +2338,8 @@ function onDown(e){
     e.preventDefault();
     breakStackAt(a); // everyone above tumbles off; anyone below keeps walking
     if(a.state==='chute'){ a.message=choice(ALIEN_CHUTE_RESCUE_MESSAGES); a.bubbleT=2.5; a.tumbled=true; }
-    enlistAlien(a);   // beamed aboard: on the roster from here, greeting or not
+    if(!a.greeted){ greetAlien(a); a.tumbled = true; }   // said hello in the beam; nothing more when it lands
+    else enlistAlien(a);
     state.held=a;
     a.state='held';
     state.dragLast={x:pos.x,y:pos.y};
@@ -3551,11 +3561,7 @@ function update(){
           if(a.tumbled){
             a.tumbled = false; // already shouted on the way down
           } else if(!a.greeted){
-            a.message = choice(ALIEN_MESSAGES);
-            a.bubbleT = 3.5;
-            a.greeted = true;
-            enlistAlien(a);
-            addScore(GREETING_POINTS);
+            greetAlien(a);
           } else {
             a.message = choice(ALIEN_REDROP_MESSAGES);
             a.bubbleT = 3;
