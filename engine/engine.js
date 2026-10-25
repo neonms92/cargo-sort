@@ -99,11 +99,20 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 }
 #sectorPanel .hud-label{justify-content:flex-end; gap:8px;}
 #sectorValue{font-family:var(--font-display); font-size:20px; font-weight:700; color:var(--amber); letter-spacing:1px;}
-#barrelDots{display:flex; gap:6px; margin-top:8px; justify-content:flex-end;}
-.cdot{width:9px;height:9px;border-radius:2px; background:#0b0f16; border:1px solid var(--border); transform:rotate(45deg);}
-.cdot.on{background:var(--success); border-color:var(--success); box-shadow:0 0 6px var(--success);}
-#scoreLine{margin:8px 0 0;}
-#scoreLine .val{color:var(--text-mid);}
+#sectorRow{display:flex; align-items:center; justify-content:flex-end; gap:10px;}
+/* Fuel: a diamond per sealed barrel, as tall as the sector number. Through the jump they drain top to
+   bottom (.drain), over a little less than the iris stays shut (TRAVEL_DUR). */
+#barrelDots{display:flex; gap:4px; height:17px; --drain:.92s;}
+.cdot{position:relative; width:11px; height:100%;}
+.cdot.on{filter:drop-shadow(0 0 3px rgba(124,255,178,0.7));}
+.cdot>b, .cdot>b>i{position:absolute; clip-path:polygon(50% 0, 100% 50%, 50% 100%, 0 50%);}
+.cdot>b{inset:0; background:var(--border); transition:background .3s ease;}
+.cdot>b>i{inset:1.5px; background:#0b0f16; overflow:hidden;}
+.cdot>b>i>i{position:absolute; inset:0; background:var(--success); transform:scaleY(0); transform-origin:50% 100%; transition:transform .35s ease-out;}
+.cdot.on>b{background:var(--success);}
+.cdot.on>b>i>i{transform:scaleY(1);}
+#barrelDots.drain .cdot>b{background:var(--border); transition-duration:var(--drain);}
+#barrelDots.drain .cdot>b>i>i{transform:scaleY(0); transition:transform var(--drain) linear;}
 
 #audioToggle{
   width:auto; padding:6px 10px; border-radius:4px; cursor:pointer;
@@ -112,6 +121,10 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 }
 #audioToggle .dot{width:6px;height:6px;border-radius:50%; background:var(--cyan); box-shadow:0 0 5px var(--cyan);}
 #audioToggle.off .dot{background:var(--danger); box-shadow:0 0 5px var(--danger);}
+/* Phones: no room beside the hull panel for both, so the comms switch tucks under the sector panel. */
+@media (max-width:520px){
+  #topRight{flex-direction:column-reverse; align-items:flex-end;}
+}
 
 #toolbar{
   position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
@@ -303,9 +316,7 @@ function injectShell(){
   <div id="audioToggle" class="panel"><span class="dot"></span><span id="audioLabel">COMMS ON</span></div>
   <div id="sectorPanel" class="panel notch">
     <div class="hud-label"><span>SECTOR</span></div>
-    <div id="sectorValue">01</div>
-    <div id="barrelDots"></div>
-    <div class="hud-label" id="scoreLine"><span>SCORE</span><span class="val" id="scoreValue">0</span></div>
+    <div id="sectorRow"><div id="barrelDots">${'<div class="cdot"><b><i><i></i></i></b></div>'.repeat(4)}</div><div id="sectorValue">01</div></div>
   </div>
   </div>
 
@@ -509,6 +520,24 @@ const AudioEngine = (function(){
     osc.start(now); osc.stop(now+0.13);
   }
 
+  // A thruster lighting somewhere outside: a muffled whump through the hull, then a short roar.
+  function thrusterIgnite(){
+    if(!ctx||!enabled) return;
+    const now=ctx.currentTime;
+    const src=ctx.createBufferSource();
+    src.buffer=noiseBuffer;
+    const filt=ctx.createBiquadFilter(); filt.type='lowpass';
+    filt.frequency.setValueAtTime(90, now);
+    filt.frequency.linearRampToValueAtTime(420, now+0.12);
+    filt.frequency.exponentialRampToValueAtTime(160, now+0.9);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.22, now+0.06);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+1.0);
+    src.connect(filt); filt.connect(g); g.connect(master);
+    src.start(now); src.stop(now+1.05);
+  }
+
   // Short mechanical whir for the robot arm / floor doors. f0→f1 sweep over dur seconds.
   function servo(f0, f1, dur){
     if(!ctx||!enabled) return;
@@ -663,7 +692,7 @@ const AudioEngine = (function(){
     src.start(now); src.stop(now+2);
   }
 
-  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock, spark, rumble, hullFailure, tractorPull,
+  return {init, setEnabled, beamStart, beamStop, chuteAccept, explosion, sealHum, eject, uiBlip, servo, forceField, airlock, spark, rumble, hullFailure, tractorPull, thrusterIgnite,
           get running(){return !!ctx;}};
 })();
 
@@ -907,6 +936,8 @@ const state={
   scars:[], scarGroup:0,
   rumble:{t:0, dur:0, next:2, shake:0},
   irisSparkT:0,
+  // Exhaust from the four thrusters, one per barrel slot (see updatePlumes).
+  plumes:[0,1,2,3].map(()=>({lit:false, p:0, flare:0})),
   failure:null,
   warnT:0,
   irisOpen:1, irisTarget:1,
@@ -1686,8 +1717,10 @@ function startLevel(sector, riseBarrels){
   for(let i=0;i<4;i++) trySpawnRandom();
 }
 function updateBarrelDots(){
-  let sealedCount = state.barrels.filter(b=>b.sealed).length;
-  document.getElementById('barrelDots').innerHTML = [0,1,2,3].map(i=>`<div class="cdot ${i<sealedCount?'on':''}"></div>`).join('');
+  const sealedCount = state.barrels.filter(b=>b.sealed).length;
+  const box = document.getElementById('barrelDots');
+  box.classList.toggle('drain', !!state.transition && state.transition.step==='travel');
+  [...box.children].forEach((d,i)=>d.classList.toggle('on', i<sealedCount));
 }
 
 function toast(text, sub, cls, dur){
@@ -1740,15 +1773,13 @@ const MATCH_POINTS = 5, STREAK_MAX_BONUS = 5, SEAL_POINTS = 10, SECTOR_POINTS = 
 function addScore(n){
   if(state.breaching) return;   // the shift is over; the wreckage doesn't count
   state.score += n;
-  renderScore();
 }
-function renderScore(){ document.getElementById('scoreValue').textContent = state.score.toLocaleString('en-US'); }
 function scoreDrop(r){
   if(r.scored) return;
   addScore(MATCH_POINTS + Math.min(state.streak, STREAK_MAX_BONUS));
   state.streak++;
 }
-function resetScore(){ state.score=0; state.streak=0; state.roster=[]; renderScore(); }
+function resetScore(){ state.score=0; state.streak=0; state.roster=[]; }
 // The shift's roster: each alien once, from when it first came aboard (beamed in, or cloned) with its
 // face and name, whether or not it's on screen now. One sent out of the airlock is struck off.
 function enlistAlien(a){
@@ -2109,6 +2140,19 @@ function spawnSparkShower(x, y, dir){
   AudioEngine.spark();
 }
 // While the iris blades are moving, roll for sparks off a random point of the ring every so often.
+// Thrusters: four of them outside the hull, one per barrel slot, each lighting when the arm takes
+// its barrel away. Only their exhaust shows, a faint plume streaming off into the distance through
+// that slot's corner of the iris window. All four cut out once the iris has shut for the jump.
+function updatePlumes(dt){
+  const tr=state.transition, jumping=!!tr && tr.step!=='closing';
+  state.plumes.forEach((pl,i)=>{
+    const lit = !jumping && !state.failure && state.barrels[i].status==='gone';
+    if(lit && !pl.lit){ pl.flare=1; AudioEngine.thrusterIgnite(); }
+    pl.lit=lit;
+    pl.p = lit ? Math.min(1, pl.p+dt*2.5) : Math.max(0, pl.p-dt*4);
+    pl.flare = Math.max(0, pl.flare-dt*1.6);
+  });
+}
 function updateIrisSparks(dt){
   if(Math.abs(state.irisTarget-state.irisOpen) < 0.03){ state.irisSparkT=0; return; }
   state.irisSparkT -= dt;
@@ -3683,6 +3727,9 @@ function beginLevelTransition(){
   AudioEngine.sealHum();
   toast('SORTING CYCLE COMPLETE','Engaging transit drive — closing outer iris','good',2000);
 }
+// The jump between sectors: the iris shuts, the thrusters cut out, and the fuel diamonds drain
+// through TRAVEL_DUR, emptying just before the iris opens on the new sector.
+const TRAVEL_DUR = 1.0;   // the drain's length is --drain on #barrelDots
 function updateTransition(dt){
   const tr=state.transition;
   tr.t+=dt;
@@ -3690,13 +3737,14 @@ function updateTransition(dt){
     state.shake = Math.max(state.shake, 4);
     if(state.irisOpen<0.02 && tr.t>0.6){
       tr.step='travel'; tr.t=0;
+      updateBarrelDots();   // starts the fuel drain
       state.nebulaHue = (state.nebulaHue + rand(70,160))%360;
       state.nebulaBlobs = makeNebula(state.nebulaHue);
       state.stars = makeStars();
     }
   } else if(tr.step==='travel'){
     state.shake = Math.max(state.shake*0.9, reducedMotion?0:3);
-    if(tr.t>1.0){
+    if(tr.t>TRAVEL_DUR){
       tr.step='opening'; tr.t=0;
       state.irisTarget=1;
       toast('ARRIVING AT SECTOR '+String(state.sector+1).padStart(2,'0'),'New mineral field detected','info',1800);
@@ -3739,6 +3787,7 @@ function update(){
   updateBarrelSlots(dt);
   updateChute(dt);
   updateIrisSparks(dt);
+  updatePlumes(dt);
   updateRumble(dt);
   // Sector change only once the arm has hauled away all four barrels.
   if(state.phase==='playing' && !state.breaching && armIdle() &&
@@ -4384,6 +4433,7 @@ function drawIrisWindow(view){
     ctx.fill();
   });
   ctx.globalAlpha=1;
+  drawPlumes(view);
 
   if(view>=1){
     drawRockList(state.rocks.filter(r=>r.state==='floating' || r.state==='ejected'));
@@ -4400,6 +4450,48 @@ function drawIrisWindow(view){
     drawIrisBlades(cx,cy,r);
     drawIrisRing(cx,cy,r);
   });
+}
+// Thruster exhaust (see updatePlumes): one cached flame sprite, blitted additively into each lit
+// slot's corner of the window, pointing at its center (the plume streams away from us). Back slots
+// take the top corners, front slots the bottom ones.
+const PLUME_ANGLES=[-0.75*Math.PI, -0.25*Math.PI, 0.75*Math.PI, 0.25*Math.PI];
+let plumeSprite=null;
+function drawPlumes(view){
+  if(!state.plumes.some(pl=>pl.p>0.01)) return;
+  const {cx,cy,r}=layout.iris, L=r*0.72, Wd=r*0.22;
+  const key=L.toFixed(1)+'|'+DPR;
+  if(!plumeSprite || plumeSprite.key!==key){
+    const cv=document.createElement('canvas');
+    cv.width=Math.ceil(L*DPR); cv.height=Math.ceil(Wd*2*DPR);
+    const o=cv.getContext('2d');
+    if(!o) return;
+    o.setTransform(DPR,0,0,DPR,0,0);
+    // squashed radial gradients from the nozzle (left edge): a wide orange flame, a hot core inside
+    const flame=(len, half, stops)=>{
+      o.save(); o.translate(0, Wd); o.scale(1, half/len);
+      const g=o.createRadialGradient(0,0,0,0,0,len);
+      stops.forEach(([at,c])=>g.addColorStop(at,c));
+      o.fillStyle=g; o.fillRect(0,-len,len,len*2);
+      o.restore();
+    };
+    flame(L, Wd, [[0,'rgba(255,170,80,0.9)'],[0.35,'rgba(255,110,40,0.45)'],[0.7,'rgba(200,60,40,0.12)'],[1,'rgba(160,40,40,0)']]);
+    flame(L*0.45, Wd*0.45, [[0,'rgba(255,250,225,0.95)'],[0.5,'rgba(255,215,140,0.45)'],[1,'rgba(255,190,110,0)']]);
+    plumeSprite={key, cv};
+  }
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  state.plumes.forEach((pl,i)=>{
+    if(pl.p<=0.01) return;
+    const a=PLUME_ANGLES[i];
+    const fl = reducedMotion ? 1 : 0.88+0.08*Math.sin(state.t*31+i*2.1)+0.06*Math.sin(state.t*17.3+i);
+    ctx.globalAlpha = Math.min(1, view*pl.p*(0.7+pl.flare*0.3)*fl);
+    ctx.save();
+    ctx.translate(cx+Math.cos(a)*r*1.12, cy+Math.sin(a)*r*1.12);
+    ctx.rotate(a+Math.PI); ctx.scale(fl*(1+pl.flare*0.25), 1);
+    ctx.drawImage(plumeSprite.cv, 0, -Wd, L, Wd*2);
+    ctx.restore();
+  });
+  ctx.restore();
 }
 function drawIrisRing(cx,cy,r){
     const ringW = r*0.14;
@@ -4738,8 +4830,9 @@ function drawChute(){
   ctx.restore();
   drawChuteButton(!!occ && occ.state==='chute');
 }
-// The scoreboard: BEST and the top score (the shift in progress, once it's ahead), on a softly
-// glowing screen that flickers now and then. Tapping it opens the best shifts.
+// The scoreboard: the shift's SCORE, relabelled BEST once it pulls ahead of every earlier shift (the
+// best score before any shift starts), on a softly glowing screen that flickers now and then.
+// Tapping it opens the best shifts.
 function drawScoreboard(){
   const b=layout.scoreboard; if(!b) return;
   const x0=b.x-b.w/2, y0=b.y-b.h/2, F=Math.max(5, b.w*0.07);
@@ -4756,13 +4849,15 @@ function drawScoreboard(){
   ctx.fillStyle=g; ctx.fillRect(x0,y0,b.w,b.h);
   const flick = Math.sin(state.t*23)*Math.sin(state.t*1.7) > 0.93 ? 0.55 : 1;
   ctx.globalAlpha = flick;
-  const best = HighScores.top();
-  const top = Math.max(best, state.phase==='intro' ? 0 : state.score);
+  const best = HighScores.top(), live = state.phase!=='intro';
+  // (once the hull gives out, this shift is already on the list, so it ties the best rather than beating it)
+  const isBest = !live || (state.score>0 && (state.score>best || (state.breaching && state.score===best)));
+  const shown = live ? state.score : best;
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.font=`700 ${Math.max(5, Math.min(9, b.h*0.2)).toFixed(1)}px Orbitron, sans-serif`;
-  ctx.fillStyle='rgba(91,230,217,0.75)';
-  ctx.fillText('BEST', b.x, y0+b.h*0.27);
-  const txt = top ? top.toLocaleString('en-US') : '— —';
+  ctx.fillStyle = isBest && live ? 'rgba(124,255,178,0.9)' : 'rgba(91,230,217,0.75)';
+  ctx.fillText(isBest ? 'BEST' : 'SCORE', b.x, y0+b.h*0.27);
+  const txt = shown || live ? shown.toLocaleString('en-US') : '— —';
   ctx.font='900 20px Orbitron, sans-serif';
   const fit = Math.min(1, (b.w-10)/ctx.measureText(txt).width);
   ctx.font=`900 ${Math.max(8, Math.min(20, b.h*0.36, 20*fit)).toFixed(1)}px Orbitron, sans-serif`;
@@ -5430,7 +5525,7 @@ function restoreGame(d){
   state.sector=d.sector;
   document.getElementById('sectorValue').textContent = String(d.sector).padStart(2,'0');
   state.hull=d.hull; renderHull();
-  state.score=d.score||0; state.streak=d.streak||0; state.roster=Array.isArray(d.roster) ? d.roster : []; renderScore();
+  state.score=d.score||0; state.streak=d.streak||0; state.roster=Array.isArray(d.roster) ? d.roster : [];
   // Battle damage as it was (a save from before it was tracked gets fresh marks to match the hull).
   state.scars = Array.isArray(d.scars) ? d.scars : [];
   state.scarGroup = state.scars.reduce((m,s)=>Math.max(m, s.group), 0);
