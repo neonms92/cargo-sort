@@ -683,19 +683,30 @@ let ctx=canvas.getContext('2d');   // `let`: paintLayer() points it at an offscr
 // drawn once into an offscreen canvas and then blitted each frame. A layer is redrawn only when its
 // key changes. `fn` draws in normal screen coordinates into the region (x, y, w, h); because what's
 // cached is just that patch, the same layer can be blitted somewhere else (all barrels share one body).
+// The blit always lands on whole device pixels, so it's a 1:1 copy that looks exactly like drawing
+// directly; where the patch falls between pixels, that offset is painted into the cached copy instead.
+// A layer keeps up to `variants` copies (keys or pixel offsets), dropping the least recently used.
 let layoutGen=0;
-function makeLayer(){ return {cv:document.createElement('canvas'), key:null}; }
+function makeLayer(variants){ return {copies:new Map(), max:variants||1}; }
 function paintLayer(L, key, x, y, w, h, fn, dx, dy){
-  w=Math.ceil(w); h=Math.ceil(h);
-  if(L.key!==key){
-    L.cv.width=Math.max(1,Math.ceil(w*DPR)); L.cv.height=Math.max(1,Math.ceil(h*DPR));
-    const o=L.cv.getContext('2d');
-    o.setTransform(DPR,0,0,DPR,-x*DPR,-y*DPR);
+  const tx=dx===undefined?x:dx, ty=dy===undefined?y:dy;
+  const px=Math.floor(tx*DPR), py=Math.floor(ty*DPR);
+  const fx=tx*DPR-px, fy=ty*DPR-py;
+  const cw=Math.max(1,Math.ceil(w*DPR+fx)), ch=Math.max(1,Math.ceil(h*DPR+fy));
+  const k=key+'|'+Math.round(fx*64)+','+Math.round(fy*64)+'|'+cw+'x'+ch;   // offsets 1/64 px apart share a copy
+  let cv=L.copies.get(k);
+  if(cv) L.copies.delete(k);
+  else {
+    if(L.copies.size>=L.max){ const [k0, c0]=L.copies.entries().next().value; L.copies.delete(k0); cv=c0; }
+    else cv=document.createElement('canvas');
+    cv.width=cw; cv.height=ch;
+    const o=cv.getContext('2d');
+    o.setTransform(DPR,0,0,DPR,fx-x*DPR,fy-y*DPR);
     const main=ctx; ctx=o;
     try{ fn(); } finally { ctx=main; }
-    L.key=key;
   }
-  ctx.drawImage(L.cv, dx===undefined?x:dx, dy===undefined?y:dy, w, h);
+  L.copies.set(k, cv);
+  ctx.drawImage(cv, px/DPR, py/DPR, cw/DPR, ch/DPR);
 }
 let W=0,H=0,DPR=1;
 function resize(){
@@ -3787,6 +3798,9 @@ function updateParticles(dt){
   state.particles = state.particles.filter(p=>p.life<p.maxLife);
 }
 
+// Runs every frame, so text is only written when it changes (rewriting it, even with the same text,
+// makes the browser re-lay-out and repaint the toolbar).
+const setText = (el, t) => { if(el.textContent!==t) el.textContent=t; };
 function updateToolbar(){
   const readout=document.getElementById('o2Readout');
   const repLabel=document.getElementById('repLabel');
@@ -3797,7 +3811,7 @@ function updateToolbar(){
       fitReadout(readout);
     }
     readout.classList.add('active');
-    repLabel.textContent = 'LIFEFORM DESIGNATION';
+    setText(repLabel, 'LIFEFORM DESIGNATION');
     idlePrompt.style.display='none';
     repLabel.style.display='block';
   } else if(state.held){
@@ -3809,7 +3823,7 @@ function updateToolbar(){
       fitReadout(readout);
     }
     readout.classList.add('active');
-    repLabel.textContent = MODE.repLabel ? MODE.repLabel(r) : '';
+    setText(repLabel, MODE.repLabel ? MODE.repLabel(r) : '');
     idlePrompt.style.display='none';
     repLabel.style.display='block';
   } else {
@@ -4032,7 +4046,8 @@ function drawBay(windowView){
   drawAlienBubbles();
 }
 
-const layerSky=makeLayer(), layerIris=makeLayer(), layerBarrel=makeLayer();
+const layerSky=makeLayer(), layerIris=makeLayer(), layerBarrel=makeLayer(12);
+const starBuckets=[];
 const holeLayers=new WeakMap();
 let nebulaGen=0;
 function drawVoidBackdrop(){
@@ -4068,12 +4083,23 @@ function drawIrisWindow(view){
       ctx.beginPath(); ctx.arc(bx,by,rad,0,TAU); ctx.fill();
     });
   });
+  // Stars twinkle; they're grouped into 32 brightness steps so they take a few dozen fills, not 140.
+  const STAR_STEPS=32;
+  starBuckets.length=0;
   state.stars.forEach(s=>{
-    const sx=cx+Math.cos(s.a)*r*s.r, sy=cy+Math.sin(s.a)*r*s.r;
     const tw = reducedMotion ? 0.8 : 0.55+0.45*Math.sin(state.t*s.sp+s.tw);
-    ctx.globalAlpha = tw*view;
-    ctx.fillStyle='#dfeaff';
-    ctx.beginPath(); ctx.arc(sx,sy,s.size,0,TAU); ctx.fill();
+    const k=Math.round(tw*STAR_STEPS);
+    (starBuckets[k] || (starBuckets[k]=[])).push(s);
+  });
+  ctx.fillStyle='#dfeaff';
+  starBuckets.forEach((list,k)=>{
+    ctx.globalAlpha = k/STAR_STEPS*view;
+    ctx.beginPath();
+    for(const s of list){
+      const sx=cx+Math.cos(s.a)*r*s.r, sy=cy+Math.sin(s.a)*r*s.r;
+      ctx.moveTo(sx+s.size,sy); ctx.arc(sx,sy,s.size,0,TAU);
+    }
+    ctx.fill();
   });
   ctx.globalAlpha=1;
 
@@ -4216,26 +4242,37 @@ function drawFloor(){
   }
 }
 
+// All four look the same, so one is drawn into a cached layer (lit and unlit) and blitted at each.
+const layerEmitter=makeLayer(8);
 function drawEmitters(){
+  const active = !!state.held || !!(state.failure && state.failure.tractor), e0=layout.emitters[0];
+  const P = active ? 36 : 15;   // room for the glow
   layout.emitters.forEach(e=>{
-    ctx.save();
-    ctx.translate(e.x,e.y);
-    const active = !!state.held || !!(state.failure && state.failure.tractor);
-    ctx.fillStyle='#242b36';
-    ctx.beginPath(); ctx.arc(0,0,13,0,TAU); ctx.fill();
-    ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
-    ctx.fillStyle = active ? '#5be6d9' : '#3a4351';
-    ctx.beginPath(); ctx.arc(0,0,5.5,0,TAU); ctx.fill();
-    if(active){
-      ctx.shadowColor='#5be6d9'; ctx.shadowBlur=14;
-      ctx.beginPath(); ctx.arc(0,0,5.5,0,TAU); ctx.fill();
-      ctx.shadowBlur=0;
-    }
-    ctx.restore();
+    paintLayer(layerEmitter, layoutGen+'|'+DPR+'|'+active, e0.x-P, e0.y-P, P*2, P*2, ()=>drawEmitter(e0, active), e.x-P, e.y-P);
   });
 }
+function drawEmitter(e, active){
+  ctx.save();
+  ctx.translate(e.x,e.y);
+  ctx.fillStyle='#242b36';
+  ctx.beginPath(); ctx.arc(0,0,13,0,TAU); ctx.fill();
+  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle = active ? '#5be6d9' : '#3a4351';
+  ctx.beginPath(); ctx.arc(0,0,5.5,0,TAU); ctx.fill();
+  if(active){
+    ctx.shadowColor='#5be6d9'; ctx.shadowBlur=14;
+    ctx.beginPath(); ctx.arc(0,0,5.5,0,TAU); ctx.fill();
+    ctx.shadowBlur=0;
+  }
+  ctx.restore();
+}
 
+const layerRedButton=makeLayer(), layerLever=makeLayer(3);
 function drawRedButton(){
+  const b=layout.redButton, P=b.r*1.6+2;
+  paintLayer(layerRedButton, layoutGen+'|'+DPR, b.x-P, b.y-P, P*2, P*2, drawRedButtonRaw);
+}
+function drawRedButtonRaw(){
   const b=layout.redButton;
   ctx.save();
   ctx.translate(b.x,b.y);
@@ -4252,7 +4289,14 @@ function drawRedButton(){
   ctx.restore();
 }
 
+// Cached for each pose of the handle and the light (the lit light is a blur shadow).
 function drawLever(){
+  const L=layout.lever;
+  const lit = state.leverDown && Math.sin(state.t*Math.PI*3) > 0;
+  const g = lit ? 24 : 0;   // room for the light's glow
+  paintLayer(layerLever, layoutGen+'|'+DPR+'|'+state.leverDown+'|'+lit, L.x-L.h-6, L.y-L.h-6-g, L.h+6+40+g, L.h*2+12+g*2, ()=>drawLeverRaw(lit));
+}
+function drawLeverRaw(lit){
   const L=layout.lever;
   ctx.save();
   ctx.translate(L.x,L.y);
@@ -4271,7 +4315,6 @@ function drawLever(){
   ctx.beginPath(); ctx.arc(0,0,4,0,TAU); ctx.fill();
   // warning light: dark while up, blinking red for as long as the lever stays down
   const lx=24, ly=-6;
-  const lit = state.leverDown && Math.sin(state.t*Math.PI*3) > 0;
   ctx.fillStyle='#20262f';
   ctx.beginPath(); ctx.arc(lx,ly,8,0,TAU); ctx.fill();
   ctx.fillStyle = lit ? '#ff3b3b' : '#4a1616';
@@ -4317,48 +4360,57 @@ function drawForceField(){
 
 // The airlock chute: a glass box in a wall frame. Behind the glass is the outer hatch, a round
 // port that irises open onto space when the chute launches. The occupant is drawn between the two.
+// The box behind the occupant and the glass in front are cached layers, redrawn only when the hatch
+// moves (or the sector's sky changes); a launch flash draws the glass live.
+const layerChuteBack=makeLayer(), layerChuteGlass=makeLayer();
+let starsGen=0;
 function drawChute(){
   const c=layout.chute, ch=state.chute, occ=chuteOccupant();
   const x0=c.x-c.w/2, y0=c.y-c.h/2, F=Math.max(5, c.w*0.07);   // frame width (computeLayout assumes the same)
-  ctx.save();
-  // wall frame
-  ctx.fillStyle='#1b212b';
-  roundRectPath(x0-F, y0-F, c.w+F*2, c.h+F*2, 6); ctx.fill();
-  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
-  ctx.fillStyle='#151b23';
-  [[x0-F*0.5,y0-F*0.5],[x0+c.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+c.h+F*0.5],[x0+c.w+F*0.5,y0+c.h+F*0.5]].forEach(([bx,by])=>{
-    ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
+  const m=F+3, lx=x0-m, ly=y0-m, lw=c.w+m*2, lh=c.h+m*2;
+  if(!state.stars.gen) state.stars.gen=++starsGen;
+  paintLayer(layerChuteBack, layoutGen+'|'+DPR+'|'+state.nebulaHue+'|'+state.stars.gen+'|'+ch.hatch.toFixed(3), lx, ly, lw, lh, ()=>{
+    ctx.save();
+    // wall frame
+    ctx.fillStyle='#1b212b';
+    roundRectPath(x0-F, y0-F, c.w+F*2, c.h+F*2, 6); ctx.fill();
+    ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle='#151b23';
+    [[x0-F*0.5,y0-F*0.5],[x0+c.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+c.h+F*0.5],[x0+c.w+F*0.5,y0+c.h+F*0.5]].forEach(([bx,by])=>{
+      ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
+    });
+    // inside of the box, with the outer hatch in its back wall
+    ctx.fillStyle='#0c1118';
+    ctx.fillRect(x0, y0, c.w, c.h);
+    const px=c.x, py=c.y-c.h*0.05, pr=c.w*0.36;
+    ctx.fillStyle='#232a35';
+    ctx.beginPath(); ctx.arc(px,py,pr*1.12,0,TAU); ctx.fill();
+    ctx.save();
+    ctx.beginPath(); ctx.arc(px,py,pr,0,TAU); ctx.clip();
+    ctx.fillStyle=`hsl(${state.nebulaHue},45%,8%)`;
+    ctx.fillRect(px-pr,py-pr,pr*2,pr*2);
+    ctx.fillStyle='#dfeaff';
+    for(let i=0;i<7;i++){
+      const s=state.stars[i]; if(!s) break;
+      ctx.globalAlpha=0.5+0.5*s.r;
+      ctx.beginPath(); ctx.arc(px+Math.cos(s.a)*pr*s.r, py+Math.sin(s.a)*pr*s.r, 0.9, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // hatch leaves: closed they meet in the middle, open they slide back into the rim
+    const open=ch.hatch;
+    ctx.fillStyle='#2e3644'; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=1;
+    const N=6;
+    for(let i=0;i<N;i++){
+      const a0=i/N*TAU + open*0.6, inner=pr*open*1.02;
+      ctx.beginPath();
+      ctx.moveTo(px+Math.cos(a0)*inner, py+Math.sin(a0)*inner);
+      ctx.arc(px,py,pr*1.05,a0,a0+TAU/N+0.02);
+      ctx.lineTo(px+Math.cos(a0+TAU/N)*inner, py+Math.sin(a0+TAU/N)*inner);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.restore();
   });
-  // inside of the box, with the outer hatch in its back wall
-  ctx.fillStyle='#0c1118';
-  ctx.fillRect(x0, y0, c.w, c.h);
-  const px=c.x, py=c.y-c.h*0.05, pr=c.w*0.36;
-  ctx.fillStyle='#232a35';
-  ctx.beginPath(); ctx.arc(px,py,pr*1.12,0,TAU); ctx.fill();
-  ctx.save();
-  ctx.beginPath(); ctx.arc(px,py,pr,0,TAU); ctx.clip();
-  ctx.fillStyle=`hsl(${state.nebulaHue},45%,8%)`;
-  ctx.fillRect(px-pr,py-pr,pr*2,pr*2);
-  ctx.fillStyle='#dfeaff';
-  for(let i=0;i<7;i++){
-    const s=state.stars[i]; if(!s) break;
-    ctx.globalAlpha=0.5+0.5*s.r;
-    ctx.beginPath(); ctx.arc(px+Math.cos(s.a)*pr*s.r, py+Math.sin(s.a)*pr*s.r, 0.9, 0, TAU); ctx.fill();
-  }
-  ctx.globalAlpha=1;
-  // hatch leaves: closed they meet in the middle, open they slide back into the rim
-  const open=ch.hatch;
-  ctx.fillStyle='#2e3644'; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=1;
-  const N=6;
-  for(let i=0;i<N;i++){
-    const a0=i/N*TAU + open*0.6, inner=pr*open*1.02;
-    ctx.beginPath();
-    ctx.moveTo(px+Math.cos(a0)*inner, py+Math.sin(a0)*inner);
-    ctx.arc(px,py,pr*1.05,a0,a0+TAU/N+0.02);
-    ctx.lineTo(px+Math.cos(a0+TAU/N)*inner, py+Math.sin(a0+TAU/N)*inner);
-    ctx.closePath(); ctx.fill(); ctx.stroke();
-  }
-  ctx.restore();
   // occupant, inside the glass
   if(occ){
     ctx.save();
@@ -4367,27 +4419,35 @@ function drawChute(){
     ctx.restore();
   }
   // glass front: a tint, two highlight streaks, a cyan edge; white flash on launch
-  ctx.fillStyle='rgba(150,215,255,0.08)';
-  ctx.fillRect(x0,y0,c.w,c.h);
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x0,y0,c.w,c.h); ctx.clip();
-  ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineCap='round';
-  ctx.lineWidth=c.w*0.09;
-  ctx.beginPath(); ctx.moveTo(x0+c.w*0.15, y0+c.h*0.55); ctx.lineTo(x0+c.w*0.55, y0+c.h*0.08); ctx.stroke();
-  ctx.lineWidth=c.w*0.04;
-  ctx.beginPath(); ctx.moveTo(x0+c.w*0.32, y0+c.h*0.62); ctx.lineTo(x0+c.w*0.72, y0+c.h*0.15); ctx.stroke();
-  ctx.restore();
-  if(ch.flash>0){
-    ctx.fillStyle=`rgba(230,250,255,${ch.flash*0.7})`;
+  const glass=()=>{
+    ctx.save();
+    ctx.fillStyle='rgba(150,215,255,0.08)';
     ctx.fillRect(x0,y0,c.w,c.h);
-  }
-  ctx.strokeStyle='rgba(91,230,217,0.55)'; ctx.lineWidth=1.5;
-  ctx.strokeRect(x0+0.5,y0+0.5,c.w-1,c.h-1);
-  // stencil on the top of the frame, and an occupancy light
-  ctx.font=`700 ${Math.max(6, Math.min(9, F*1.1))}px Orbitron, sans-serif`;
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillStyle='rgba(255,182,72,0.75)';
-  ctx.fillText('AIRLOCK', c.x, y0-F*0.5);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0,y0,c.w,c.h); ctx.clip();
+    ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineCap='round';
+    ctx.lineWidth=c.w*0.09;
+    ctx.beginPath(); ctx.moveTo(x0+c.w*0.15, y0+c.h*0.55); ctx.lineTo(x0+c.w*0.55, y0+c.h*0.08); ctx.stroke();
+    ctx.lineWidth=c.w*0.04;
+    ctx.beginPath(); ctx.moveTo(x0+c.w*0.32, y0+c.h*0.62); ctx.lineTo(x0+c.w*0.72, y0+c.h*0.15); ctx.stroke();
+    ctx.restore();
+    if(ch.flash>0){
+      ctx.fillStyle=`rgba(230,250,255,${ch.flash*0.7})`;
+      ctx.fillRect(x0,y0,c.w,c.h);
+    }
+    ctx.strokeStyle='rgba(91,230,217,0.55)'; ctx.lineWidth=1.5;
+    ctx.strokeRect(x0+0.5,y0+0.5,c.w-1,c.h-1);
+    // stencil on the top of the frame
+    ctx.font=`700 ${Math.max(6, Math.min(9, F*1.1))}px Orbitron, sans-serif`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillStyle='rgba(255,182,72,0.75)';
+    ctx.fillText('AIRLOCK', c.x, y0-F*0.5);
+    ctx.restore();
+  };
+  if(ch.flash>0) glass();
+  else paintLayer(layerChuteGlass, layoutGen+'|'+DPR+'|'+holoFontGen, lx, ly, lw, lh, glass);
+  // occupancy light
+  ctx.save();
   const lit = occ && occ.state==='chute' && Math.sin(state.t*Math.PI*2.4)>0;
   ctx.fillStyle = lit ? '#ffb648' : '#4a3a1e';
   if(lit){ ctx.shadowColor='#ffb648'; ctx.shadowBlur=10; }
@@ -4398,29 +4458,34 @@ function drawChute(){
 }
 // The scoreboard: BEST and the top score (the shift in progress, once it's ahead), on a softly
 // glowing screen that flickers now and then. Tapping it opens the best shifts.
+// It only changes when the score or the flicker does, so it's a cached layer (the glowing digits are a
+// blur shadow, which is costly to redraw every frame).
+const layerScoreboard=makeLayer(2);
 function drawScoreboard(){
   const b=layout.scoreboard; if(!b) return;
   const x0=b.x-b.w/2, y0=b.y-b.h/2, F=Math.max(5, b.w*0.07);
-  ctx.save();
-  ctx.fillStyle='#1b212b';
-  roundRectPath(x0-F, y0-F, b.w+F*2, b.h+F*2, 6); ctx.fill();
-  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
-  ctx.fillStyle='#151b23';
-  [[x0-F*0.5,y0-F*0.5],[x0+b.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+b.h+F*0.5],[x0+b.w+F*0.5,y0+b.h+F*0.5]].forEach(([bx,by])=>{
-    ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
+  const flick = Math.sin(state.t*23)*Math.sin(state.t*1.7) > 0.93 ? 0.55 : 1;
+  const best = HighScores.top();
+  const top = Math.max(best, state.phase==='intro' ? 0 : state.score);
+  const txt = top ? top.toLocaleString('en-US') : '— —';
+  const m=F+2;
+  paintLayer(layerScoreboard, layoutGen+'|'+DPR+'|'+holoFontGen+'|'+txt+'|'+flick, x0-m, y0-m, b.w+m*2, b.h+m*2, ()=>{
+    ctx.save();
+    ctx.fillStyle='#1b212b';
+    roundRectPath(x0-F, y0-F, b.w+F*2, b.h+F*2, 6); ctx.fill();
+    ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle='#151b23';
+    [[x0-F*0.5,y0-F*0.5],[x0+b.w+F*0.5,y0-F*0.5],[x0-F*0.5,y0+b.h+F*0.5],[x0+b.w+F*0.5,y0+b.h+F*0.5]].forEach(([bx,by])=>{
+      ctx.beginPath(); ctx.arc(bx,by,Math.max(1.5,F*0.28),0,TAU); ctx.fill();
   });
   const g=ctx.createLinearGradient(0,y0,0,y0+b.h);
   g.addColorStop(0,'#0d2a2a'); g.addColorStop(1,'#071516');
   ctx.fillStyle=g; ctx.fillRect(x0,y0,b.w,b.h);
-  const flick = Math.sin(state.t*23)*Math.sin(state.t*1.7) > 0.93 ? 0.55 : 1;
   ctx.globalAlpha = flick;
-  const best = HighScores.top();
-  const top = Math.max(best, state.phase==='intro' ? 0 : state.score);
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.font=`700 ${Math.max(5, Math.min(9, b.h*0.2)).toFixed(1)}px Orbitron, sans-serif`;
   ctx.fillStyle='rgba(91,230,217,0.75)';
   ctx.fillText('BEST', b.x, y0+b.h*0.27);
-  const txt = top ? top.toLocaleString('en-US') : '— —';
   ctx.font='900 20px Orbitron, sans-serif';
   const fit = Math.min(1, (b.w-10)/ctx.measureText(txt).width);
   ctx.font=`900 ${Math.max(8, Math.min(20, b.h*0.36, 20*fit)).toFixed(1)}px Orbitron, sans-serif`;
@@ -4434,6 +4499,7 @@ function drawScoreboard(){
   ctx.strokeStyle='rgba(91,230,217,0.55)'; ctx.lineWidth=1.5;
   ctx.strokeRect(x0+0.5,y0+0.5,b.w-1,b.h-1);
   ctx.restore();
+  });
 }
 function hitScoreboard(pos){
   const b=layout.scoreboard; if(!b) return false;
@@ -4834,6 +4900,21 @@ function drawBarrel(anchor,i,noShadow){
     ctx.restore();
   }
 
+  // The lid and rim look the same on every barrel in the same state, so they're cached per state
+  // (empty / labelled / sealed) and blitted; a flashing rim is drawn live.
+  const flashBoost = b.flashT>0 ? (b.flashT/0.3) : 0;
+  const lidState = b.sealed ? 'sealed' : b.value ? 'armed' : 'empty';
+  if(flashBoost>0) drawBarrelLid(anchor, b, rimColor, flashBoost);
+  else {
+    const L=lidLayers[lidState] || (lidLayers[lidState]=makeLayer(12)), P=14;
+    paintLayer(L, layoutGen+'|'+DPR, anchor.x-R-P, topY-ry-P, (R+P)*2, (ry+P)*2, ()=>drawBarrelLid(anchor, b, rimColor, 0));
+  }
+  ctx.restore();
+}
+const lidLayers={};
+function drawBarrelLid(anchor, b, rimColor, flashBoost){
+  const R=layout.barrelR, ry=R*0.42, topY=anchor.y-layout.barrelH;
+  ctx.save();
   const lidGrad=ctx.createRadialGradient(anchor.x-R*0.3,topY-ry*0.3,2, anchor.x,topY,R*1.1);
   lidGrad.addColorStop(0,'#4a5568');
   lidGrad.addColorStop(1,'#232a35');
@@ -4855,7 +4936,6 @@ function drawBarrel(anchor,i,noShadow){
     ctx.restore();
   }
 
-  const flashBoost = b.flashT>0 ? (b.flashT/0.3) : 0;
   // rim glow: soft wide strokes under the rim (cheaper than a blur shadow)
   const glow=4+flashBoost*14+(b.sealed?6:0);
   ctx.beginPath(); ctx.ellipse(anchor.x,topY,R,ry,0,0,TAU);
@@ -4964,10 +5044,20 @@ function drawParticles(){
   });
 }
 
-function loop(){
-  update();
-  draw();
+// Battery: on 120Hz+ screens a frame that comes less than 10ms after the last one is skipped, so the
+// game runs at 60fps there (90Hz screens still get every frame). And while an opaque overlay (the
+// start screen, or the end screen when the bay is still in one piece) covers the stage, the game keeps
+// running but the scene isn't drawn: nobody can see it.
+const startOverlayEl=document.getElementById('startOverlay'), endOverlayEl=document.getElementById('endOverlay');
+const sceneCovered = () => !startOverlayEl.classList.contains('hidden') ||
+  (!endOverlayEl.classList.contains('hidden') && !endOverlayEl.classList.contains('adrift'));
+let lastFrameAt=0;
+function loop(now){
   requestAnimationFrame(loop);
+  if(now - lastFrameAt < 10) return;
+  lastFrameAt = now;
+  update();
+  if(!sceneCovered()) draw();
 }
 
 resize();
@@ -5168,7 +5258,8 @@ function takeAutoResumeFlag(){
 
 // ---------- Live update (GitHub Pages only) ----------
 // Every 30s, re-fetch this page and the engine (both cache-busted past GitHub's CDN) and compare them
-// with what this tab actually loaded. If either differs: save, then reload (also cache-busted; the
+// with what this tab actually loaded. The engine is big, so it's only downloaded when a header-only
+// request says it has changed (its ETag / Last-Modified / size differ from the copy this tab runs). If either differs: save, then reload (also cache-busted; the
 // page's loader passes the same ?v= on to the engine) and resume automatically. The reload waits
 // while something is in the tractor beam so a drag isn't cut off. If a reload still doesn't bring in
 // that exact new version (CDN lag, a browser extension editing the page), it won't reload for it
@@ -5180,9 +5271,13 @@ function takeAutoResumeFlag(){
   const enginePath = new URL(ENGINE_SRC).pathname;
   const hash = str => { let h=0x811c9dc5; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,0x01000193); } return (h>>>0).toString(36) + ':' + str.length; };
   const getText = async (url, opts) => { const r = await fetch(url, opts); if(!r.ok) throw new Error(r.status); return r.text(); };
+  // A file version's fingerprint from its headers, or null if the server doesn't send enough to tell.
+  const headerSig = r => { const h=r.headers, e=h.get('etag'), m=h.get('last-modified'); return e || (m ? m+'|'+(h.get('content-length')||'') : null); };
   // The engine text this tab is running: the browser just downloaded it, so this comes from its cache.
-  let engineBase = null;
-  const loadBase = () => getText(ENGINE_SRC, {cache:'force-cache'}).then(t=>{ engineBase=t; }, ()=>{});
+  let engineBase = null, engineSig = null;
+  const loadBase = () => fetch(ENGINE_SRC, {cache:'force-cache'})
+    .then(r=>{ if(!r.ok) throw new Error(r.status); engineSig=headerSig(r); return r.text(); })
+    .then(t=>{ engineBase=t; }, ()=>{});
   loadBase();
   let triedTarget = null;
   try{ triedTarget = sessionStorage.getItem(KEY); }catch(e){}
@@ -5190,13 +5285,20 @@ function takeAutoResumeFlag(){
   async function check(){
     if(updating || document.visibilityState==='hidden') return;
     if(engineBase===null){ await loadBase(); if(engineBase===null) return; }
-    let page, engine;
+    let page, engine=engineBase;
     try{
       const v = '?v=' + Date.now();
-      [page, engine] = await Promise.all([
+      const [p, head] = await Promise.all([
         getText(location.pathname + v, {cache:'no-store'}),
-        getText(enginePath + v, {cache:'no-store'}),
+        engineSig ? fetch(enginePath + v, {method:'HEAD', cache:'no-store'}) : null,
       ]);
+      page = p;
+      const sig = head && head.ok ? headerSig(head) : null;
+      if(!sig || sig!==engineSig){
+        engine = await getText(enginePath + v, {cache:'no-store'});
+        // same text under new headers (a redeploy): remember them, so it isn't downloaded every time
+        if(sig && engine===engineBase) engineSig = sig;
+      }
     }catch(e){ return; }
     const freshPage = pageFingerprint(new DOMParser().parseFromString(page, 'text/html'));
     if(freshPage === PAGE_FP && engine === engineBase) return;
