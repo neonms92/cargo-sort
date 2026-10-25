@@ -1113,18 +1113,20 @@ function alienEyeSpots(face){
   const layout = layouts[face.eyeLayout||0] || layouts[0];
   return layout.map(([x,y,s])=>({x:x*face.eyeSpread, y, rx:face.eyeR*s, ry:face.eyeR*s*(face.eyeAspect||1)}));
 }
-// Draws the face at (cx,cy), its head filling radius r. Antennae, when it has them, shrink the head
-// down inside that radius to make room.
-function drawAlienFace(cx,cy,r,face){
+// Draws the face at (cx,cy), its head filling radius r. In a helmet (radius r/0.92), antennae are
+// longer and poke out through the glass, sealed where they pass through it. Without one (the roster
+// thumbnails), antennae shrink the head down inside radius r to make room.
+const ALIEN_HELMET_R = 1/0.92;   // the helmet's radius, in head radii
+function drawAlienFace(cx,cy,r,face,inHelmet){
   ctx.save();
   ctx.translate(cx,cy);
   const ant = face.antennae||0;
-  const hs = ant ? 0.74 : 1;
-  ctx.translate(0, ant ? r*0.22 : 0);
+  const hs = ant && !inHelmet ? 0.74 : 1;
+  ctx.translate(0, ant && !inHelmet ? r*0.22 : 0);
   ctx.scale(r*hs, r*hs);   // from here on, 1 = the head's radius
   const skin=(l)=>`hsl(${face.hue},${face.sat}%,${l}%)`;
 
-  if(ant) drawAlienAntennae(face, ant, skin);
+  if(ant) drawAlienAntennae(face, ant, skin, inHelmet);
 
   const skinGrad=ctx.createRadialGradient(-0.25,-0.25,0.1, 0,0,1);
   skinGrad.addColorStop(0, skin(58));
@@ -1203,13 +1205,13 @@ function drawAlienEye(face, e, skin){
     ctx.stroke();
   }
 }
-function drawAlienAntennae(face, n, skin){
+function drawAlienAntennae(face, n, skin, inHelmet){
   const angles = n===1 ? [face.antennaBend*0.6] : n===2 ? [-0.5,0.5] : [-0.7,0,0.7];
   const tipColor = `hsl(${face.antennaHue},80%,60%)`;
   ctx.lineCap='round';
   angles.forEach((a,i)=>{
     const bx=Math.sin(a)*0.9, by=-Math.cos(a)*0.9;
-    const L=face.antennaLen*(n===3 && i===1 ? 1.1 : 1);
+    const L=face.antennaLen*(n===3 && i===1 ? 1.1 : 1) + (inHelmet ? 0.2 : 0);
     const dx=Math.sin(a), dy=-Math.cos(a);
     const bend=face.antennaBend*(a<0 ? -1 : 1);   // mirrored, so pairs curve symmetrically
     const tx=bx+dx*(0.1+L), ty=by+dy*(0.1+L);
@@ -1217,6 +1219,19 @@ function drawAlienAntennae(face, n, skin){
     ctx.strokeStyle=skin(38);
     ctx.lineWidth=0.07;
     ctx.beginPath(); ctx.moveTo(bx,by); ctx.quadraticCurveTo(mx,my,tx,ty); ctx.stroke();
+    if(inHelmet){
+      // a seal where the stalk passes through the helmet glass
+      for(let s=1;s<=24;s++){
+        const u=s/24, v=1-u;
+        const px=v*v*bx+2*v*u*mx+u*u*tx, py=v*v*by+2*v*u*my+u*u*ty;
+        if(Math.hypot(px,py)<ALIEN_HELMET_R) continue;
+        ctx.fillStyle='rgba(226,231,238,0.95)';
+        ctx.strokeStyle='rgba(90,98,110,0.9)'; ctx.lineWidth=0.025;
+        ctx.beginPath(); ctx.arc(px,py,0.075,0,TAU); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle=skin(38); ctx.lineWidth=0.07;
+        break;
+      }
+    }
     const tip=face.antennaTip||'ball';
     if(tip==='curl'){
       ctx.lineWidth=0.06;
@@ -1391,24 +1406,39 @@ function drawAlienMouth(face){
 // Each face is drawn once into its own small canvas and blitted every frame after; it's only
 // redrawn when the alien grows a lot bigger (or a lot smaller) on screen. Clones share the copy.
 const alienFaceCache = new WeakMap();
-const ALIEN_FACE_PAD = 1.06;   // the canvas reaches a little past the head's radius
-function drawAlienFaceCached(r, face, pxPerUnit){
+// The canvas reaches a little past the head's radius, or out past the antenna tips. In the bay the
+// copy is drawn twice: under the helmet's fog ('inside'), then just the antennae poking out of it
+// on top of the glass ('outside').
+function drawAlienFaceCached(r, face, pxPerUnit, part){
   const need = Math.max(16, Math.ceil(r*pxPerUnit/16)*16);   // the head's radius in device pixels
   let c = alienFaceCache.get(face);
   if(!c || need>c.pr || need<c.pr/2){
     const cv = c ? c.cv : document.createElement('canvas');
-    const side = Math.ceil(need*ALIEN_FACE_PAD)*2;
+    const side = Math.ceil(need*(face.antennae ? 1.75 : 1.06))*2;
     cv.width = cv.height = side;
     const o = cv.getContext('2d');
-    if(!o){ drawAlienFace(0,0,r,face); return; }   // out of canvas memory: draw it directly
+    if(!o){   // out of canvas memory: draw it directly
+      ctx.save(); alienFaceClip(r, part); drawAlienFace(0,0,r,face,true); ctx.restore();
+      return;
+    }
     o.setTransform(1,0,0,1,side/2,side/2);
     const main = ctx; ctx = o;
-    try{ drawAlienFace(0,0,need,face); } finally { ctx = main; }
+    try{ drawAlienFace(0,0,need,face,true); } finally { ctx = main; }
     c = {cv, pr:need, ext:side/2/need};
     alienFaceCache.set(face, c);
   }
   const e = r*c.ext;
+  ctx.save();
+  alienFaceClip(r, part);
   ctx.drawImage(c.cv, -e, -e, e*2, e*2);
+  ctx.restore();
+}
+// Outside starts just inside the helmet's rim, so the seals sit on top of its outline.
+function alienFaceClip(r, part){
+  const R = r*ALIEN_HELMET_R;
+  ctx.beginPath();
+  if(part==='outside'){ ctx.rect(-R*3,-R*3,R*6,R*6); ctx.arc(0,0,R*0.95,0,TAU); ctx.clip('evenodd'); }
+  else if(part==='inside'){ ctx.arc(0,0,R,0,TAU); ctx.clip(); }
 }
 const ALIEN_NAME_CONSONANTS = 'bcdfghjklmnpqrstvwxyz'.split('');
 const ALIEN_NAME_VOWELS = 'aeiou'.split('');
@@ -4270,7 +4300,7 @@ function drawAlienList(list){
     ctx.scale(a.scale,a.scale);
     const R=a.size;
 
-    drawAlienFaceCached(R*0.92, a.face, a.scale*DPR);
+    drawAlienFaceCached(R*0.92, a.face, a.scale*DPR, a.face.antennae ? 'inside' : null);
 
     const grad=ctx.createRadialGradient(0,0,R*0.4, 0,0,R);
     grad.addColorStop(0,'rgba(150,158,168,0)');
@@ -4281,6 +4311,7 @@ function drawAlienList(list){
     ctx.strokeStyle='rgba(255,255,255,0.95)';
     ctx.lineWidth=2.5/a.scale;
     ctx.beginPath(); ctx.arc(0,0,R,0,TAU); ctx.stroke();
+    if(a.face.antennae) drawAlienFaceCached(R*0.92, a.face, a.scale*DPR, 'outside');
 
     if(a.abductMarked){
       // stuck to the side of the helmet, wrapping off its edge
