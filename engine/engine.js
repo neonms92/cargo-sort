@@ -114,17 +114,18 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #barrelDots.drain .cdot>b{background:var(--border); transition-duration:var(--drain);}
 #barrelDots.drain .cdot>b>i>i{transform:scaleY(0); transition:transform var(--drain) linear;}
 
+/* The sound switch, in the best shifts dialog: a label and a sliding toggle. */
 #audioToggle{
-  width:auto; padding:6px 10px; border-radius:4px; cursor:pointer;
-  font-family:var(--font-display); font-size:9px; letter-spacing:1.5px; color:var(--text-mid);
-  display:flex; align-items:center; gap:6px;
+  display:flex; align-items:center; gap:12px; margin:-6px 0 14px; padding:6px 4px; cursor:pointer;
+  background:none; border:0; color:var(--text-mid);
+  font-family:var(--font-display); font-size:11px; letter-spacing:2px;
 }
-#audioToggle .dot{width:6px;height:6px;border-radius:50%; background:var(--cyan); box-shadow:0 0 5px var(--cyan);}
-#audioToggle.off .dot{background:var(--danger); box-shadow:0 0 5px var(--danger);}
-/* Phones: no room beside the hull panel for both, so the comms switch tucks under the sector panel. */
-@media (max-width:520px){
-  #topRight{flex-direction:column-reverse; align-items:flex-end;}
-}
+#audioToggle .sw{position:relative; width:34px; height:18px; border-radius:9px; flex:none;
+  background:#0b0f16; border:1px solid var(--cyan-dim); transition:background .2s ease, border-color .2s ease;}
+#audioToggle .sw::after{content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%;
+  background:var(--text-dim); transition:transform .2s ease, background .2s ease;}
+#audioToggle[aria-checked="true"] .sw{background:rgba(91,230,217,0.18); border-color:var(--cyan);}
+#audioToggle[aria-checked="true"] .sw::after{transform:translateX(16px); background:var(--cyan); box-shadow:0 0 6px var(--cyan);}
 
 #toolbar{
   position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
@@ -313,7 +314,6 @@ function injectShell(){
   </div>
 
   <div id="topRight">
-  <div id="audioToggle" class="panel"><span class="dot"></span><span id="audioLabel">COMMS ON</span></div>
   <div id="sectorPanel" class="panel notch">
     <div class="hud-label"><span>SECTOR</span></div>
     <div id="sectorRow"><div id="barrelDots">${'<div class="cdot"><b><i><i></i></i></b></div>'.repeat(4)}</div><div id="sectorValue">01</div></div>
@@ -350,6 +350,7 @@ function injectShell(){
       <div class="ship">S.S. KESTREL-9 — CARGO DIVISION</div>
       <h2>BEST SHIFTS</h2>
       <div id="scoresList"></div>
+      <button id="audioToggle" role="switch" aria-checked="true"><span>SOUNDS ENABLED</span><span class="sw"></span></button>
       <button class="bigBtn" id="scoresClose">CLOSE</button>
     </div>
   </div>
@@ -764,7 +765,7 @@ window.addEventListener('resize', resize);
 // The airlock and the wall scoreboard are fitted around the HUD panels (computeLayout measures them),
 // so lay out again whenever those move or change size: the page's styles or fonts arriving late,
 // larger system text, a longer score.
-const hudEls=['hullPanel','audioToggle','sectorPanel'].map(id=>document.getElementById(id)).filter(Boolean);
+const hudEls=['hullPanel','sectorPanel'].map(id=>document.getElementById(id)).filter(Boolean);
 const hudRects=()=>hudEls.map(el=>{ const r=el.getBoundingClientRect(); return [r.left,r.top,r.right,r.bottom].map(Math.round).join(','); }).join('|');
 let hudLaidOut='';
 if(window.ResizeObserver){
@@ -879,11 +880,8 @@ function computeLayout(){
   const sbW = Math.max(40, Math.min(SB_MAX, W - 10 - sbL - frameOf(SB_MAX)*2));
   const sbR = sbL + frameOf(sbW)*2 + sbW;
   let sbTop = 14;
-  ['audioToggle','sectorPanel'].forEach(id=>{
-    const el=document.getElementById(id); if(!el) return;
-    const r=el.getBoundingClientRect();
-    if(r.left - 8 < sbR) sbTop = Math.max(sbTop, r.bottom + 14);
-  });
+  { const r=document.getElementById('sectorPanel').getBoundingClientRect();
+    if(r.left - 8 < sbR) sbTop = Math.max(sbTop, r.bottom + 14); }
   const e1 = layout.emitters[1];
   if(e1.x - 15 < sbR) sbTop = Math.max(sbTop, e1.y + 15 + 6);
   let sbBottom = L.y - L.h - 14;
@@ -5755,8 +5753,7 @@ let audioOn=true;
 audioToggle.addEventListener('click', ()=>{
   audioOn=!audioOn;
   AudioEngine.setEnabled(audioOn);
-  audioToggle.classList.toggle('off', !audioOn);
-  document.getElementById('audioLabel').textContent = audioOn? 'COMMS ON':'COMMS OFF';
+  audioToggle.setAttribute('aria-checked', String(audioOn));
 });
 document.getElementById('secretSpawnBtn').addEventListener('click', ()=>{
   // Debug spawn: straight into the off-screen gap (as if it had just walked off track 1), so it
