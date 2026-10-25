@@ -102,6 +102,8 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #barrelDots{display:flex; gap:6px; margin-top:8px; justify-content:flex-end;}
 .cdot{width:9px;height:9px;border-radius:2px; background:#0b0f16; border:1px solid var(--border); transform:rotate(45deg);}
 .cdot.on{background:var(--success); border-color:var(--success); box-shadow:0 0 6px var(--success);}
+#scoreLine{margin:8px 0 0;}
+#scoreLine .val{color:var(--text-mid);}
 
 #audioToggle{
   width:auto; padding:6px 10px; border-radius:4px; cursor:pointer;
@@ -211,6 +213,33 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 @keyframes adriftIn{from{opacity:0;} to{opacity:1;}}
 .bigBtn.danger{background:linear-gradient(180deg, var(--danger), #a52d2d); color:#2a0808; box-shadow:0 0 26px rgba(255,82,82,0.4);}
 
+/* End screen: this shift's score and the protocol's best five, each with the aliens who came aboard. */
+#endScore{font-family:var(--font-display); font-size:12px; letter-spacing:3px; color:var(--text-mid); margin:6px 0 18px;}
+#endScore .val{color:var(--amber); font-size:22px; font-weight:700; margin-left:10px; letter-spacing:1px;}
+#bestScores{width:min(560px,100%); margin:0 0 24px; display:flex; flex-direction:column; gap:8px;}
+#bestScores:empty{display:none;}
+#bestScores .lbl{font-family:var(--font-display); font-size:10px; letter-spacing:3px; color:var(--text-dim); text-align:left;}
+.bestRow{display:flex; align-items:center; gap:12px; padding:6px 12px; text-align:left;
+  background:rgba(11,15,22,0.72); border:1px solid var(--border); border-radius:4px;}
+.bestRow.cur{border-color:var(--cyan); box-shadow:0 0 12px rgba(91,230,217,0.25);}
+.bestRow .rank{font-family:var(--font-display); font-size:11px; color:var(--text-dim); flex:none;}
+.bestRow .tally{flex:none; min-width:76px;}
+.bestRow .pts{font-family:var(--font-display); font-weight:700; font-size:16px; color:var(--amber);}
+.bestRow .sec{font-family:var(--font-display); font-size:9px; letter-spacing:1.5px; color:var(--text-dim); margin-top:2px;}
+.roster{flex:1; min-width:0; display:flex; flex-direction:column; align-items:center;}
+.rosterStrip{position:relative; width:100%; display:flex; align-items:center; gap:12px; height:52px;
+  padding:0 calc(50% - 15px); overflow-x:auto; overflow-y:hidden; scroll-snap-type:x proximity;
+  touch-action:pan-x pan-y; scrollbar-width:none; overscroll-behavior-x:contain;
+  -webkit-mask-image:linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent); mask-image:linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent);}
+.rosterStrip::-webkit-scrollbar{display:none;}
+.rosterFace{flex:0 0 30px; height:30px; border-radius:50%; overflow:hidden; scroll-snap-align:center; cursor:pointer;
+  background:var(--panel-3); border:1.5px solid rgba(255,255,255,0.7); opacity:0.55;
+  transition:transform .15s ease, opacity .15s ease;}
+.rosterFace img, .rosterFace canvas{display:block; width:100%; height:100%;}
+.rosterFace.hl{transform:scale(1.5); opacity:1;}
+.rosterName{font-family:var(--font-display); font-size:10px; letter-spacing:2px; color:var(--cyan); min-height:13px;}
+.roster.empty .rosterName{color:var(--text-dim);}
+
 
 @media (prefers-reduced-motion: reduce){
   .toast{transition:none;}
@@ -264,6 +293,7 @@ function injectShell(){
     <div class="hud-label"><span>SECTOR</span></div>
     <div id="sectorValue">01</div>
     <div id="barrelDots"></div>
+    <div class="hud-label" id="scoreLine"><span>SCORE</span><span class="val" id="scoreValue">0</span></div>
   </div>
   </div>
 
@@ -296,6 +326,8 @@ function injectShell(){
     <div class="ship">S.S. KESTREL-9 — CARGO DIVISION</div>
     <h1 id="endTitle">HULL BREACH</h1>
     <p id="endText">Structural integrity has failed. Cargo operations suspended.</p>
+    <div id="endScore">SCORE<span class="val" id="endScoreValue">0</span></div>
+    <div id="bestScores"></div>
     <button class="bigBtn danger" id="restartBtn">CALL FOR RESCUE</button>
   </div>
 </div>
@@ -772,6 +804,8 @@ const state={
   breaching:false,
   hull:100,
   sector:1,
+  // Score for this shift, the current run of good drops, and every alien that came aboard (see enlistAlien).
+  score:0, streak:0, roster:[],
   // status: 'ready' (on its slot, usable) | 'carried' (in the robot arm) | 'gone' (retrieved) | 'rising' (coming up from its slot)
   //         | 'destroyed' (blown up by a mismatch; replacement rises after destroyT)
   barrels:[0,1,2,3].map(()=>({value:null, text:null, glyph:null, items:[], holo:0, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
@@ -1326,6 +1360,7 @@ function damageHull(amount, site){
   state.warnT=0.5;
   state.shake = Math.min(state.shake+18, 26);
   if(state.hull<=0 && state.phase==='playing' && !state.breaching){
+    recordShift();
     state.breaching = true;
     SaveGame.clear(); // the shift is lost; don't let a reload undo it
     startHullFailure();
@@ -1335,6 +1370,118 @@ function healHull(amount){
   state.hull = clamp(state.hull+amount, 0, 100);
   renderHull();
   syncDamageMarks();
+}
+
+// ---------- Score ----------
+// Kept quiet on purpose: just the running total in the sector panel, no pop-ups. A good drop is worth
+// 5, plus 1 for each good drop before it in a row (up to +5); a mismatch ends the run. A rock scores
+// once: the rocks an ejected barrel throws back out were already counted. Nothing is time-based.
+const MATCH_POINTS = 5, STREAK_MAX_BONUS = 5, SEAL_POINTS = 10, SECTOR_POINTS = 10, GREETING_POINTS = 100;
+function addScore(n){
+  if(state.breaching) return;   // the shift is over; the wreckage doesn't count
+  state.score += n;
+  renderScore();
+}
+function renderScore(){ document.getElementById('scoreValue').textContent = state.score.toLocaleString('en-US'); }
+function scoreDrop(r){
+  if(r.scored) return;
+  addScore(MATCH_POINTS + Math.min(state.streak, STREAK_MAX_BONUS));
+  state.streak++;
+}
+function resetScore(){ state.score=0; state.streak=0; state.roster=[]; renderScore(); }
+// The shift's roster: each alien once, as it first came aboard, with its face and name.
+function enlistAlien(a){
+  if(state.roster.some(m=>m.id===a.id)) return;
+  state.roster.push({id:a.id, name:a.name, src:a.avatarImg ? a.avatarImg.src : null, face:a.face});
+}
+
+// Each protocol keeps its own best five shifts, each with the aliens who came aboard.
+const HighScores = (()=>{
+  const KEY = MODE.id==='o2' ? 'cargoSort.best' : 'cargoSort.'+MODE.id+'.best', KEEP = 5;
+  function load(){
+    try{ const l=JSON.parse(localStorage.getItem(KEY)||'[]'); return Array.isArray(l) ? l : []; }catch(e){ return []; }
+  }
+  function record(entry){
+    const list = load().concat([entry]).sort((a,b)=> b.score-a.score || a.t-b.t).slice(0, KEEP);
+    try{ localStorage.setItem(KEY, JSON.stringify(list)); }catch(e){ /* storage blocked: still show it */ }
+    return list;
+  }
+  return {load, record};
+})();
+let lastShift = null;   // this shift's entry once it has ended, to light it up in the list
+function recordShift(){
+  lastShift = {score:state.score, sector:state.sector, t:Date.now(),
+    roster:state.roster.map(m=>({name:m.name, src:m.src, face:m.face}))};
+  if(state.score>0) HighScores.record(lastShift);
+}
+function renderBestScores(){
+  document.getElementById('endScoreValue').textContent = (lastShift ? lastShift.score : state.score).toLocaleString('en-US');
+  const box = document.getElementById('bestScores');
+  box.innerHTML = '';
+  const list = HighScores.load();
+  if(!list.length) return;
+  box.insertAdjacentHTML('beforeend', '<div class="lbl">BEST SHIFTS</div>');
+  const strips = [];
+  list.forEach((e,i)=>{
+    const row = document.createElement('div');
+    row.className = 'bestRow' + (lastShift && e.t===lastShift.t ? ' cur' : '');
+    row.innerHTML = `<div class="rank">${i+1}</div><div class="tally"><div class="pts">${Number(e.score).toLocaleString('en-US')}</div>`
+      + `<div class="sec">SECTOR ${String(e.sector).padStart(2,'0')}</div></div>`;
+    const roster = buildRoster(e.roster||[]);
+    row.appendChild(roster.el);
+    if(roster.update) strips.push(roster.update);
+    box.appendChild(row);
+  });
+  requestAnimationFrame(()=>strips.forEach(f=>f()));   // once laid out
+}
+// A sideways-scrolling strip of faces. Whichever face sits in the middle grows and shows its name.
+function buildRoster(roster){
+  const el = document.createElement('div');
+  el.className = 'roster';
+  const name = document.createElement('div');
+  name.className = 'rosterName';
+  if(!roster.length){ el.classList.add('empty'); name.textContent = 'NO ALIENS ABOARD'; el.appendChild(name); return {el}; }
+  const strip = document.createElement('div');
+  strip.className = 'rosterStrip';
+  const faces = roster.map(m=>{
+    const f = document.createElement('div');
+    f.className = 'rosterFace';
+    f.appendChild(rosterFaceArt(m));
+    f.addEventListener('click', ()=>strip.scrollTo({left:f.offsetLeft + f.offsetWidth/2 - strip.clientWidth/2, behavior:'smooth'}));
+    strip.appendChild(f);
+    return f;
+  });
+  let cur = -1, queued = false;
+  function update(){
+    queued = false;
+    const mid = strip.scrollLeft + strip.clientWidth/2;
+    let best = 0, bestD = Infinity;
+    faces.forEach((f,i)=>{ const d = Math.abs(f.offsetLeft + f.offsetWidth/2 - mid); if(d<bestD){ bestD=d; best=i; } });
+    if(best===cur) return;
+    if(cur>=0) faces[cur].classList.remove('hl');
+    cur = best;
+    faces[cur].classList.add('hl');
+    name.textContent = roster[cur].name;
+  }
+  strip.addEventListener('scroll', ()=>{ if(!queued){ queued=true; requestAnimationFrame(update); } }, {passive:true});
+  el.appendChild(strip);
+  el.appendChild(name);
+  return {el, update};
+}
+function rosterFaceArt(m){
+  const drawn = ()=>{
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const main = ctx; ctx = c.getContext('2d');
+    try{ drawWavatarFace(32, 32, 32, m.face || makeAlienFace()); } finally { ctx = main; }
+    return c;
+  };
+  if(!m.src) return drawn();
+  const img = new Image();
+  img.alt = '';
+  img.onerror = ()=>img.replaceWith(drawn());
+  img.src = m.src;
+  return img;
 }
 
 // ---------- Structural damage ----------
@@ -1643,6 +1790,7 @@ function gameOver(){
   AudioEngine.beamStop();
   document.getElementById('endTitle').textContent='HULL BREACH';
   document.getElementById('endText').textContent = `Structural integrity failed in Sector ${String(state.sector).padStart(2,'0')}. Cargo operations suspended.`;
+  renderBestScores();
   const ov=document.getElementById('endOverlay');
   ov.classList.toggle('adrift', !!state.failure);   // see-through, so the wreckage keeps drifting behind it
   ov.classList.remove('hidden');
@@ -2368,6 +2516,7 @@ function putAlienInChute(a){
   a.walkPhase=null; a.fixitMode=false; a.tumbled=false; a.hideJumpOut=false;
   a.fvx=a.fvy=0;
   a.greeted = true;
+  enlistAlien(a);
   a.message = choice(ALIEN_CHUTE_ENTER_MESSAGES);
   a.bubbleT = 3;
   a.chuteTalkT = rand(7,11);
@@ -2490,6 +2639,7 @@ function duplicateAlien(parent){
 
   clone.walksReverse = Math.random()<0.5;
   clone.greeted = true;
+  enlistAlien(clone);
   clone.state = 'settled';
   clone.buttonRolled = false;
   clone.leverRolled = false;
@@ -2580,6 +2730,7 @@ function handleBarrelDrop(idx, r){
     barrel.glyph = r.glyph || null;
     barrel.slots = 1;
     barrel.items = [rockItem(r)];
+    scoreDrop(r);
     r.state='gone';
     removeRock(r);
     barrel.flashT=0.3;
@@ -2590,6 +2741,7 @@ function handleBarrelDrop(idx, r){
   if(sameValue(barrel.value, r.value)){
     barrel.slots++;
     barrel.items.push(rockItem(r));
+    scoreDrop(r);
     r.state='gone';
     removeRock(r);
     barrel.flashT=0.3;
@@ -2609,6 +2761,7 @@ function mismatch(idx, r){
   const midY = anchor.y - layout.barrelH*0.5;
   barrel.value=null; barrel.text=null; barrel.glyph=null; barrel.items=[]; barrel.slots=0; barrel.sealed=false;
   barrel.flashT=0; barrel.fillDisplay=0;
+  state.streak = 0;
   // The barrel is destroyed outright; a fresh empty one comes up out of its slot shortly after.
   barrel.status='destroyed'; barrel.destroyT=BARREL_RESPAWN_DELAY; barrel.riseT=0; barrel.door=0;
   r.state='gone';
@@ -2627,6 +2780,7 @@ function sealBarrel(idx){
   const anchor=layout.barrels4[idx];
   spawnSealRing(anchor.x, anchor.y-layout.barrelH*0.5);
   updateBarrelDots();
+  addScore(SEAL_POINTS);
   queueArmRetrieval(idx);
   // The sector change waits until the arm has taken every barrel away (see updateArm).
 }
@@ -2660,6 +2814,7 @@ function ejectBarrel(idx){
         newRock.x = x; newRock.y = y;
         newRock.baseX = x; newRock.baseY = y;
         newRock.state = 'falling';
+        newRock.scored = true;   // counted on the way in
         newRock.fvx = vx;
         newRock.fvy = vy;
         state.rocks.push(newRock);
@@ -3149,6 +3304,7 @@ function updateTransition(dt){
       tr.step='opening'; tr.t=0;
       state.irisTarget=1;
       toast('ARRIVING AT SECTOR '+String(state.sector+1).padStart(2,'0'),'New mineral field detected','info',1800);
+      addScore(SECTOR_POINTS*state.sector);   // for the sector just cleared
       startLevel(state.sector+1, true);
     }
   } else if(tr.step==='opening'){
@@ -3319,6 +3475,8 @@ function update(){
             a.message = choice(ALIEN_MESSAGES);
             a.bubbleT = 3.5;
             a.greeted = true;
+            enlistAlien(a);
+            addScore(GREETING_POINTS);
           } else {
             a.message = choice(ALIEN_REDROP_MESSAGES);
             a.bubbleT = 3;
@@ -4719,6 +4877,7 @@ const SaveGame = (()=>{
     }
     return {
       v:VERSION, mode:MODE.id, W, H, sector:state.sector, hull:state.hull, scars:state.scars,
+      score:state.score, streak:state.streak, roster:state.roster,
       irisOpen:state.irisOpen, irisTarget:state.irisTarget, leverDown:state.leverDown,
       nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector,
       alienCloneCounters:state.alienCloneCounters,
@@ -4773,6 +4932,7 @@ function restoreGame(d){
   state.sector=d.sector;
   document.getElementById('sectorValue').textContent = String(d.sector).padStart(2,'0');
   state.hull=d.hull; renderHull();
+  state.score=d.score||0; state.streak=d.streak||0; state.roster=Array.isArray(d.roster) ? d.roster : []; renderScore();
   // Battle damage as it was (a save from before it was tracked gets fresh marks to match the hull).
   state.scars = Array.isArray(d.scars) ? d.scars : [];
   state.scarGroup = state.scars.reduce((m,s)=>Math.max(m, s.group), 0);
@@ -4863,6 +5023,7 @@ function beginShift(resume, auto){
   state.aliens=[]; state.alienCloneCounters={}; state.leverDown=false; state.irisOpen=1; state.irisTarget=1;
   state.hull=100; renderHull();
   state.scars=[]; paintBackground();
+  resetScore(); lastShift=null;
   startLevel(1);
 }
 document.getElementById('startBtn').addEventListener('click', ()=>beginShift(true));
@@ -4929,6 +5090,7 @@ document.getElementById('restartBtn').addEventListener('click', ()=>{
 // A fresh shift from Sector 1: new bay, full hull, no aliens.
 function resetShiftState(){
   state.hull=100; renderHull();
+  resetScore(); lastShift=null;
   state.scars=[]; paintBackground();
   state.particles=[];
   state.rocks=[];
@@ -4955,6 +5117,7 @@ document.getElementById('secretSpawnBtn').addEventListener('click', ()=>{
     const a=createAlien();
     a.state='settled'; a.walkPhase='gap'; a.waitTimer=2;  // short wait so it's quick to test with
     a.track=1; a.greeted=true; a.walksReverse=Math.random()<0.5;
+    enlistAlien(a);
     a.scale=a.targetScale=ALIEN_TRACK1_SCALE;
     a.x=a.baseX = a.walksReverse ? -ALIEN_TRACK_EDGE_MARGIN*3 : W + ALIEN_TRACK_EDGE_MARGIN*3;
     a.y=a.baseY = layout.floorBottom - a.size*0.4;
