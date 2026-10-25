@@ -1017,80 +1017,367 @@ const ALIEN_MESSAGES=[
   "My species thanks you. All nine of us.",
   "Ten out of ten cargo bay, would drift again.",
 ];
+// An alien's face is plain data, rolled once when it comes aboard. Drawing reads only that data,
+// so the same alien looks the same everywhere: in the bay, as a clone, after a reload, and on the
+// high-score rosters. Faces saved before a feature existed just go without it.
+const ALIEN_EYE_COUNTS = [[1,25],[2,50],[3,20],[4,4],[5,1]];   // eye count, % of aliens
+// Where the eyes sit, per eye count: one or more arrangements of [x, y, size] in head radii.
+// x is in units of the face's eyeSpread; size scales its eyeR.
+const ALIEN_EYE_LAYOUTS = {
+  1: [ [[0,-0.08,1.15]], [[0,-0.14,1.45]] ],
+  2: [ [[-1,-0.08,1],[1,-0.08,1]],
+       [[-1,-0.1,1.15],[1,-0.04,0.8]],
+       [[-0.7,-0.1,0.9],[0.7,-0.1,0.9]] ],
+  3: [ [[-1.15,-0.06,0.75],[0,-0.1,0.75],[1.15,-0.06,0.75]],
+       [[-0.85,-0.02,0.78],[0.85,-0.02,0.78],[0,-0.44,0.7]],
+       [[0,-0.06,1.05],[-1.2,-0.36,0.55],[1.2,-0.36,0.55]] ],
+  4: [ [[-1.5,-0.04,0.55],[-0.5,-0.1,0.6],[0.5,-0.1,0.6],[1.5,-0.04,0.55]],
+       [[-0.8,-0.34,0.6],[0.8,-0.34,0.6],[-0.8,0.04,0.6],[0.8,0.04,0.6]] ],
+  5: [ [[-1.6,0,0.5],[-0.8,-0.14,0.52],[0,-0.2,0.55],[0.8,-0.14,0.52],[1.6,0,0.5]],
+       [[-1.15,-0.02,0.58],[0,-0.02,0.58],[1.15,-0.02,0.58],[-0.58,-0.38,0.52],[0.58,-0.38,0.52]] ],
+};
+const ALIEN_PUPILS = ['round','round','round','slit','dot','ring','glow'];
+const ALIEN_LIDS = ['none','none','none','sleepy','angry','happy'];
+const ALIEN_MOUTHS = ['smile','smile','open','teeth','fangs','o','wavy','flat','buck','tongue'];
+const ALIEN_ANTENNA_TIPS = ['ball','ball','glow','curl','fork'];
+const ALIEN_GLASSES = ['round','square','shades','visor'];
+const ALIEN_ANTENNAE_CHANCE = 0.4, ALIEN_GLASSES_CHANCE = 0.18;
+function weightedPick(pairs){
+  let t = Math.random()*pairs.reduce((s,p)=>s+p[1],0);
+  for(const [v,w] of pairs){ if((t-=w)<0) return v; }
+  return pairs[pairs.length-1][0];
+}
 function makeAlienFace(){
+  const eyeCount = weightedPick(ALIEN_EYE_COUNTS);
+  const antennae = Math.random()<ALIEN_ANTENNAE_CHANCE ? weightedPick([[1,40],[2,52],[3,8]]) : 0;
   return {
     hue: randInt(0,360),
     sat: randInt(45,70),
-    eyeCount: choice([1,2,2,2,2]),
+    eyeCount,
+    eyeLayout: randInt(0, ALIEN_EYE_LAYOUTS[eyeCount].length-1),
     eyeHue: randInt(0,360),
     eyeSpread: rand(0.28,0.42),
     eyeR: rand(0.16,0.24),
+    eyeAspect: choice([1,1,1.3,0.72]),   // eye height / width
+    pupil: choice(ALIEN_PUPILS),
     pupilOffX: rand(-0.18,0.18),
     pupilOffY: rand(-0.18,0.18),
+    lid: choice(ALIEN_LIDS),
+    lashes: Math.random()<0.15,
+    mouth: choice(ALIEN_MOUTHS),
     mouthWidth: rand(0.3,0.5),
     mouthCurve: choice([0.16,-0.12,0.06,-0.2,0.02]),
     bumpCount: randInt(0,3),
+    antennae,
+    antennaTip: choice(ALIEN_ANTENNA_TIPS),
+    antennaLen: rand(0.22,0.36),
+    antennaBend: rand(-0.25,0.25),
+    antennaHue: randInt(0,360),
+    glasses: Math.random()<ALIEN_GLASSES_CHANCE ? choice(ALIEN_GLASSES) : null,
+    glassesHue: choice([null, randInt(0,360)]),   // null = black frames
   };
 }
-function drawWavatarFace(cx,cy,r,face){
+function alienEyeSpots(face){
+  const layouts = ALIEN_EYE_LAYOUTS[face.eyeCount] || ALIEN_EYE_LAYOUTS[2];
+  const layout = layouts[face.eyeLayout||0] || layouts[0];
+  return layout.map(([x,y,s])=>({x:x*face.eyeSpread, y, rx:face.eyeR*s, ry:face.eyeR*s*(face.eyeAspect||1)}));
+}
+// Draws the face at (cx,cy), its head filling radius r. Antennae, when it has them, shrink the head
+// down inside that radius to make room.
+function drawAlienFace(cx,cy,r,face){
   ctx.save();
   ctx.translate(cx,cy);
-  const skinColor=`hsl(${face.hue},${face.sat}%,46%)`;
-  const skinGrad=ctx.createRadialGradient(-r*0.25,-r*0.25,r*0.1, 0,0,r);
-  skinGrad.addColorStop(0, `hsl(${face.hue},${face.sat}%,58%)`);
-  skinGrad.addColorStop(1, skinColor);
+  const ant = face.antennae||0;
+  const hs = ant ? 0.74 : 1;
+  ctx.translate(0, ant ? r*0.22 : 0);
+  ctx.scale(r*hs, r*hs);   // from here on, 1 = the head's radius
+  const skin=(l)=>`hsl(${face.hue},${face.sat}%,${l}%)`;
+
+  if(ant) drawAlienAntennae(face, ant, skin);
+
+  const skinGrad=ctx.createRadialGradient(-0.25,-0.25,0.1, 0,0,1);
+  skinGrad.addColorStop(0, skin(58));
+  skinGrad.addColorStop(1, skin(46));
   ctx.fillStyle=skinGrad;
-  ctx.beginPath(); ctx.arc(0,0,r,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(0,0,1,0,TAU); ctx.fill();
 
   for(let i=0;i<face.bumpCount;i++){
     const a=(i/Math.max(1,face.bumpCount))*Math.PI*2 + 0.4;
-    const bx=Math.cos(a)*r*0.78, by=Math.sin(a)*r*0.78;
-    ctx.fillStyle=`hsl(${face.hue},${face.sat}%,40%)`;
-    ctx.beginPath(); ctx.arc(bx,by,r*0.12,0,TAU); ctx.fill();
+    ctx.fillStyle=skin(40);
+    ctx.beginPath(); ctx.arc(Math.cos(a)*0.78,Math.sin(a)*0.78,0.12,0,TAU); ctx.fill();
   }
 
-  function drawEye(ex,ey,er){
-    ctx.fillStyle='white';
-    ctx.beginPath(); ctx.arc(ex,ey,er,0,TAU); ctx.fill();
-    ctx.fillStyle=`hsl(${face.eyeHue},70%,55%)`;
-    const pr=er*0.55;
-    const pox=ex+face.pupilOffX*er, poy=ey+face.pupilOffY*er;
-    ctx.beginPath(); ctx.arc(pox,poy,pr,0,TAU); ctx.fill();
-    ctx.fillStyle='#0a0a0a';
-    ctx.beginPath(); ctx.arc(pox,poy,pr*0.4,0,TAU); ctx.fill();
-  }
-  const eyeR=r*face.eyeR;
-  if(face.eyeCount===1){
-    drawEye(0,-r*0.08,eyeR*1.15);
-  } else {
-    const ex=r*face.eyeSpread;
-    drawEye(-ex,-r*0.08,eyeR);
-    drawEye(ex,-r*0.08,eyeR);
-  }
-
-  ctx.strokeStyle='rgba(15,10,10,0.75)';
-  ctx.lineWidth=r*0.08;
-  ctx.lineCap='round';
-  ctx.beginPath();
-  const mouthY=r*0.36, mw=r*face.mouthWidth;
-  ctx.moveTo(-mw,mouthY);
-  ctx.quadraticCurveTo(0, mouthY+r*face.mouthCurve, mw, mouthY);
-  ctx.stroke();
-
+  const eyes = alienEyeSpots(face);
+  eyes.forEach(e=>drawAlienEye(face, e, skin));
+  if(face.glasses) drawAlienGlasses(face, eyes);
+  drawAlienMouth(face);
   ctx.restore();
 }
-// Alien face rendering mode. The procedural wavatar-style generator above is preserved
-// but DISABLED by default — aliens render a live Gravatar wavatar image instead.
-// Set to 'procedural' to re-enable the built-in generator.
-const ALIEN_FACE_MODE = 'gravatar';
-
-function loadAlienAvatar(alien){
-  const ts = Math.floor(Date.now()/1000);
-  const img = new Image();
-  img.onload = ()=>{ alien.avatarLoaded = true; };
-  img.onerror = ()=>{ alien.avatarLoaded = false; alien.avatarFailed = true; };
-  img.src = `https://www.gravatar.com/avatar/${ts}?d=wavatar&f=y`;
-  alien.avatarImg = img;
+function drawAlienEye(face, e, skin){
+  const {x, y, rx, ry} = e, m = Math.min(rx, ry);
+  const pupil = face.pupil||'round';
+  const eyePath=()=>{ ctx.beginPath(); ctx.ellipse(x,y,rx,ry,0,0,TAU); };
+  eyePath();
+  ctx.fillStyle = pupil==='glow' ? `hsl(${face.eyeHue},90%,62%)` : 'white';
+  ctx.fill();
+  ctx.save();
+  eyePath(); ctx.clip();
+  const px = x+face.pupilOffX*rx, py = y+face.pupilOffY*ry;
+  if(pupil==='round' || pupil==='slit' || pupil==='ring'){
+    const pr = m*(pupil==='ring' ? 0.7 : 0.55);
+    ctx.fillStyle=`hsl(${face.eyeHue},70%,55%)`;
+    ctx.beginPath(); ctx.arc(px,py,pr,0,TAU); ctx.fill();
+    ctx.fillStyle='#0a0a0a';
+    ctx.beginPath();
+    if(pupil==='slit') ctx.ellipse(px,py,pr*0.22,pr*0.9,0,0,TAU);
+    else ctx.arc(px,py,pr*(pupil==='ring' ? 0.62 : 0.4),0,TAU);
+    ctx.fill();
+  } else if(pupil==='dot'){
+    ctx.fillStyle='#0a0a0a';
+    ctx.beginPath(); ctx.arc(px,py,m*0.28,0,TAU); ctx.fill();
+  }
+  ctx.fillStyle='rgba(255,255,255,0.85)';
+  ctx.beginPath(); ctx.arc(x-rx*0.35,y-ry*0.38,m*0.16,0,TAU); ctx.fill();
+  // eyelids, in skin, over the top (sleepy, angry) or bottom (happy) of the eye
+  const lid = face.lid||'none';
+  if(lid!=='none'){
+    ctx.fillStyle=skin(42);
+    ctx.beginPath();
+    if(lid==='sleepy') ctx.rect(x-rx, y-ry, rx*2, ry*0.85);
+    else if(lid==='happy') ctx.ellipse(x, y+ry*1.25, rx*1.3, ry*0.85, 0, 0, TAU);
+    else {
+      // angry: slopes down toward the middle of the face (a V on an eye in the middle)
+      const inner = x<-0.01 ? 1 : x>0.01 ? -1 : 0;
+      const hi = y-ry*1.05, lo = y-ry*0.15;
+      ctx.moveTo(x-rx, y-ry*1.1);
+      if(inner===0){ ctx.lineTo(x-rx, hi); ctx.lineTo(x, lo); ctx.lineTo(x+rx, hi); }
+      else { ctx.lineTo(x-rx, inner>0 ? hi : lo); ctx.lineTo(x+rx, inner>0 ? lo : hi); }
+      ctx.lineTo(x+rx, y-ry*1.1);
+      ctx.closePath();
+    }
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.strokeStyle='rgba(15,10,10,0.45)';
+  ctx.lineWidth=0.025;
+  eyePath(); ctx.stroke();
+  if(face.lashes){
+    ctx.strokeStyle='rgba(15,10,10,0.8)';
+    ctx.lineWidth=0.03; ctx.lineCap='round';
+    ctx.beginPath();
+    for(const a of [-0.55,0,0.55]){
+      const sx=x+Math.sin(a)*rx, sy=y-Math.cos(a)*ry;
+      ctx.moveTo(sx,sy); ctx.lineTo(sx+Math.sin(a)*0.07, sy-Math.cos(a)*0.08);
+    }
+    ctx.stroke();
+  }
+}
+function drawAlienAntennae(face, n, skin){
+  const angles = n===1 ? [face.antennaBend*0.6] : n===2 ? [-0.5,0.5] : [-0.7,0,0.7];
+  const tipColor = `hsl(${face.antennaHue},80%,60%)`;
+  ctx.lineCap='round';
+  angles.forEach((a,i)=>{
+    const bx=Math.sin(a)*0.9, by=-Math.cos(a)*0.9;
+    const L=face.antennaLen*(n===3 && i===1 ? 1.1 : 1);
+    const dx=Math.sin(a), dy=-Math.cos(a);
+    const bend=face.antennaBend*(a<0 ? -1 : 1);   // mirrored, so pairs curve symmetrically
+    const tx=bx+dx*(0.1+L), ty=by+dy*(0.1+L);
+    const mx=bx+dx*(0.1+L*0.5)-dy*bend, my=by+dy*(0.1+L*0.5)+dx*bend;
+    ctx.strokeStyle=skin(38);
+    ctx.lineWidth=0.07;
+    ctx.beginPath(); ctx.moveTo(bx,by); ctx.quadraticCurveTo(mx,my,tx,ty); ctx.stroke();
+    const tip=face.antennaTip||'ball';
+    if(tip==='curl'){
+      ctx.lineWidth=0.06;
+      ctx.beginPath();
+      for(let s=0;s<=16;s++){
+        const u=s/16, rr=0.11*(1-u*0.75), th=Math.atan2(dy,dx)+Math.PI+u*TAU*1.1*(a<0 ? -1 : 1);
+        const cx=tx+dx*0.11, cy=ty+dy*0.11;
+        const px=cx+Math.cos(th)*rr, py=cy+Math.sin(th)*rr;
+        if(s===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+      }
+      ctx.stroke();
+    } else if(tip==='fork'){
+      ctx.lineWidth=0.05;
+      ctx.fillStyle=tipColor;
+      for(const f of [-0.6,0.6]){
+        const fx=tx+Math.sin(a+f)*0.14, fy=ty-Math.cos(a+f)*0.14;
+        ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(fx,fy); ctx.stroke();
+        ctx.beginPath(); ctx.arc(fx,fy,0.05,0,TAU); ctx.fill();
+      }
+    } else {
+      if(tip==='glow'){
+        ctx.fillStyle=`hsla(${face.antennaHue},90%,65%,0.3)`;
+        ctx.beginPath(); ctx.arc(tx,ty,0.17,0,TAU); ctx.fill();
+      }
+      ctx.fillStyle=tipColor;
+      ctx.beginPath(); ctx.arc(tx,ty,0.09,0,TAU); ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,0.6)';
+      ctx.beginPath(); ctx.arc(tx-0.03,ty-0.03,0.03,0,TAU); ctx.fill();
+    }
+  });
+}
+// Glasses fit whatever eyes the alien has: a lens on every eye, bridges joining each lens to its
+// nearest neighbour, and arms out to the sides. One eye gets a monocle on a chain; a visor is one
+// band per row of eyes.
+function drawAlienGlasses(face, eyes){
+  const style = face.glasses;
+  const frame = face.glassesHue===null || face.glassesHue===undefined ? 'rgba(20,20,26,0.95)' : `hsl(${face.glassesHue},65%,42%)`;
+  const lens = style==='shades' ? 'rgba(12,12,22,0.86)' : style==='visor' ? `hsla(${face.glassesHue||190},85%,55%,0.55)` : 'rgba(200,230,255,0.22)';
+  ctx.strokeStyle=frame; ctx.lineWidth=0.055; ctx.lineCap='round'; ctx.lineJoin='round';
+  if(style==='visor'){
+    const rows=[];
+    eyes.slice().sort((a,b)=>a.y-b.y).forEach(e=>{
+      const row=rows.find(r=>Math.abs(r.y-e.y)<0.15);
+      if(row){ row.eyes.push(e); } else rows.push({y:e.y, eyes:[e]});
+    });
+    rows.forEach(row=>{
+      const x0=Math.min(...row.eyes.map(e=>e.x-e.rx))-0.1, x1=Math.max(...row.eyes.map(e=>e.x+e.rx))+0.1;
+      const yc=row.eyes.reduce((s,e)=>s+e.y,0)/row.eyes.length;
+      const h=Math.max(...row.eyes.map(e=>e.ry))*2+0.1;
+      roundRectPath(x0, yc-h/2, x1-x0, h, h*0.4);
+      ctx.fillStyle=lens; ctx.fill(); ctx.stroke();
+      ctx.fillStyle='rgba(255,255,255,0.35)';
+      ctx.fillRect(x0+h*0.3, yc-h*0.3, (x1-x0)*0.35, h*0.12);
+      const arm=(x)=>{ ctx.beginPath(); ctx.moveTo(x,yc); ctx.lineTo(Math.sign(x)*Math.sqrt(Math.max(0,1-yc*yc))*0.98,yc-0.04); ctx.stroke(); };
+      arm(x0); arm(x1);
+    });
+    return;
+  }
+  // lens radius: snug around the eye, but no wider than half the gap to the next eye
+  const lr = e=>{
+    const er=Math.max(e.rx,e.ry), near=Math.min(...eyes.filter(o=>o!==e).map(o=>Math.hypot(o.x-e.x,o.y-e.y)));
+    return Math.max(er+0.02, Math.min(er*1.3+0.03, near/2-0.02));
+  };
+  const drawLens=(e)=>{
+    const R=lr(e);
+    if(style==='square') roundRectPath(e.x-R, e.y-R*0.85, R*2, R*1.7, R*0.3);
+    else { ctx.beginPath(); ctx.arc(e.x,e.y,R,0,TAU); }
+    ctx.fillStyle=lens; ctx.fill(); ctx.stroke();
+    if(style==='shades'){
+      ctx.strokeStyle='rgba(255,255,255,0.4)';
+      ctx.beginPath(); ctx.arc(e.x,e.y,R*0.65,-2.6,-1.7); ctx.stroke();
+      ctx.strokeStyle=frame;
+    }
+  };
+  if(eyes.length===1){
+    const e=eyes[0], R=lr(e);
+    drawLens(e);
+    ctx.lineWidth=0.025;
+    ctx.setLineDash([0.035,0.03]);
+    ctx.beginPath(); ctx.moveTo(e.x+R*0.7, e.y+R*0.7);
+    ctx.quadraticCurveTo(e.x+R*1.3, e.y+R*2.6, 0.78, 0.55);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    return;
+  }
+  // bridges: each lens to its nearest neighbour already joined (a minimum spanning tree)
+  const joined=[eyes[0]], rest=eyes.slice(1);
+  while(rest.length){
+    let best=null, bd=Infinity;
+    for(const a of joined) for(const b of rest){ const d=Math.hypot(a.x-b.x,a.y-b.y)-lr(a)-lr(b); if(d<bd){ bd=d; best=[a,b]; } }
+    const [a,b]=best, d=Math.hypot(a.x-b.x,a.y-b.y)||1, ux=(b.x-a.x)/d, uy=(b.y-a.y)/d;
+    const ax=a.x+ux*lr(a), ay=a.y+uy*lr(a), bx=b.x-ux*lr(b), by=b.y-uy*lr(b);
+    ctx.beginPath(); ctx.moveTo(ax,ay);
+    ctx.quadraticCurveTo((ax+bx)/2-uy*0.05, (ay+by)/2-0.05, bx,by);
+    ctx.stroke();
+    joined.push(b); rest.splice(rest.indexOf(b),1);
+  }
+  // arms from the outermost lenses to the sides of the head
+  const left=eyes.reduce((m,e)=>e.x-lr(e)<m.x-lr(m)?e:m), right=eyes.reduce((m,e)=>e.x+lr(e)>m.x+lr(m)?e:m);
+  for(const [e,s] of [[left,-1],[right,1]]){
+    const ex=e.x+s*lr(e);
+    if(Math.abs(ex)<0.95){
+      ctx.beginPath(); ctx.moveTo(ex,e.y); ctx.lineTo(s*Math.sqrt(Math.max(0,1-e.y*e.y))*0.98, e.y-0.05); ctx.stroke();
+    }
+  }
+  eyes.forEach(drawLens);
+}
+function drawAlienMouth(face){
+  const kind = face.mouth||'smile';
+  const y=0.36, mw=face.mouthWidth, c=face.mouthCurve;
+  const dark='rgba(15,10,10,0.8)';
+  ctx.strokeStyle=dark; ctx.lineWidth=0.08; ctx.lineCap='round'; ctx.lineJoin='round';
+  const smile=(w=mw, cv=c)=>{ ctx.beginPath(); ctx.moveTo(-w,y); ctx.quadraticCurveTo(0,y+cv,w,y); ctx.stroke(); };
+  const openShape=(depth)=>{ ctx.beginPath(); ctx.moveTo(-mw,y); ctx.quadraticCurveTo(0,y+depth*2,mw,y); ctx.quadraticCurveTo(0,y+0.04,-mw,y); ctx.closePath(); };
+  if(kind==='open' || kind==='teeth'){
+    const depth=0.12+Math.abs(c)*0.6;
+    openShape(depth);
+    ctx.fillStyle='#2a0d12'; ctx.fill();
+    ctx.save(); openShape(depth); ctx.clip();
+    if(kind==='open'){
+      ctx.fillStyle='#e0607a';
+      ctx.beginPath(); ctx.ellipse(0,y+depth*1.15,mw*0.5,depth*0.55,0,0,TAU); ctx.fill();
+    } else {
+      ctx.fillStyle='#f4f1e6';
+      ctx.fillRect(-mw,y-0.02,mw*2,0.09);
+      ctx.strokeStyle='rgba(60,50,40,0.6)'; ctx.lineWidth=0.018;
+      const n=Math.round(mw*12);
+      ctx.beginPath();
+      for(let i=1;i<n;i++){ const tx=-mw+i*mw*2/n; ctx.moveTo(tx,y-0.02); ctx.lineTo(tx,y+0.07); }
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.strokeStyle=dark; ctx.lineWidth=0.05;
+    openShape(depth); ctx.stroke();
+  } else if(kind==='o'){
+    const rr=0.06+mw*0.12;
+    ctx.fillStyle='#2a0d12';
+    ctx.beginPath(); ctx.ellipse(0,y+0.02,rr,rr*1.2,0,0,TAU); ctx.fill();
+    ctx.lineWidth=0.05; ctx.stroke();
+  } else if(kind==='wavy'){
+    const n=4+Math.round(mw*6);
+    ctx.lineWidth=0.06;
+    ctx.beginPath();
+    for(let i=0;i<=n;i++) ctx.lineTo(-mw+i*mw*2/n, y+(i%2 ? 0.05 : -0.03));
+    ctx.stroke();
+  } else if(kind==='flat'){
+    ctx.beginPath(); ctx.moveTo(-mw*0.75,y+0.03); ctx.lineTo(mw*0.75,y+0.03); ctx.stroke();
+  } else {
+    const cv = kind==='smile' ? c : Math.abs(c)+0.06;   // fangs, buck teeth and a tongue want a smile
+    if(kind==='tongue'){
+      const tx=mw*0.3*(c<0 ? -1 : 1);
+      ctx.fillStyle='#e0607a';
+      ctx.beginPath(); ctx.ellipse(tx,y+cv*0.5+0.09,0.09,0.12,0,0,TAU); ctx.fill();
+      ctx.strokeStyle='rgba(150,40,60,0.7)'; ctx.lineWidth=0.02;
+      ctx.beginPath(); ctx.moveTo(tx,y+cv*0.5+0.02); ctx.lineTo(tx,y+cv*0.5+0.14); ctx.stroke();
+      ctx.strokeStyle=dark; ctx.lineWidth=0.08;
+    }
+    smile(mw, cv);
+    ctx.fillStyle='#f4f1e6';
+    if(kind==='fangs'){
+      for(const s of [-1,1]){
+        const fx=s*mw*0.55, fy=y+cv*(1-0.55*0.55)*0.5;
+        ctx.beginPath(); ctx.moveTo(fx-0.045,fy); ctx.lineTo(fx+0.045,fy); ctx.lineTo(fx,fy+0.13); ctx.closePath(); ctx.fill();
+      }
+    } else if(kind==='buck'){
+      const by=y+cv*0.5;
+      ctx.fillRect(-0.075,by+0.02,0.07,0.1);
+      ctx.fillRect(0.005,by+0.02,0.07,0.1);
+    }
+  }
+}
+// Each face is drawn once into its own small canvas and blitted every frame after; it's only
+// redrawn when the alien grows a lot bigger (or a lot smaller) on screen. Clones share the copy.
+const alienFaceCache = new WeakMap();
+const ALIEN_FACE_PAD = 1.06;   // the canvas reaches a little past the head's radius
+function drawAlienFaceCached(r, face, pxPerUnit){
+  const need = Math.max(16, Math.ceil(r*pxPerUnit/16)*16);   // the head's radius in device pixels
+  let c = alienFaceCache.get(face);
+  if(!c || need>c.pr || need<c.pr/2){
+    const cv = c ? c.cv : document.createElement('canvas');
+    const side = Math.ceil(need*ALIEN_FACE_PAD)*2;
+    cv.width = cv.height = side;
+    const o = cv.getContext('2d');
+    if(!o){ drawAlienFace(0,0,r,face); return; }   // out of canvas memory: draw it directly
+    o.setTransform(1,0,0,1,side/2,side/2);
+    const main = ctx; ctx = o;
+    try{ drawAlienFace(0,0,need,face); } finally { ctx = main; }
+    c = {cv, pr:need, ext:side/2/need};
+    alienFaceCache.set(face, c);
+  }
+  const e = r*c.ext;
+  ctx.drawImage(c.cv, -e, -e, e*2, e*2);
 }
 const ALIEN_NAME_CONSONANTS = 'bcdfghjklmnpqrstvwxyz'.split('');
 const ALIEN_NAME_VOWELS = 'aeiou'.split('');
@@ -1340,7 +1627,7 @@ const ALIEN_REDROP_MESSAGES=[
   "Round two!",
   "Put me down. No wait, up!",
 ];
-function createAlien(skipAvatarLoad){
+function createAlien(){
   const sc = layout.spawnCircle;
   const ang = rand(0,TAU);
   const rr = sc.r*Math.sqrt(Math.random())*0.7;
@@ -1359,8 +1646,7 @@ function createAlien(skipAvatarLoad){
     phase:rand(0,TAU), freq:rand(0.3,0.6), amp:rand(6,12),
     state:'floating',
     fvy:0,
-    face: makeAlienFace(), // kept populated so ALIEN_FACE_MODE can be flipped back at any time
-    avatarImg:null, avatarLoaded:false, avatarFailed:false,
+    face: makeAlienFace(),
     message:null, bubbleT:0,
     walkPhase:null, track:1, waitTimer:0,
     greeted:false, fixitMode:false, buttonRolled:false, walksReverse:false,
@@ -1372,7 +1658,6 @@ function createAlien(skipAvatarLoad){
   };
   rollAlienWalkSpeed(alien);
   alien.baseName = alien.name;
-  if(ALIEN_FACE_MODE==='gravatar' && !skipAvatarLoad) loadAlienAvatar(alien);
   return alien;
 }
 function trySpawnRandom(){
@@ -1468,7 +1753,7 @@ function resetScore(){ state.score=0; state.streak=0; state.roster=[]; renderSco
 // face and name, whether or not it's on screen now. One sent out of the airlock is struck off.
 function enlistAlien(a){
   if(state.roster.some(m=>m.id===a.id)) return;
-  state.roster.push({id:a.id, name:a.name, src:a.avatarImg ? a.avatarImg.src : null, face:a.face});
+  state.roster.push({id:a.id, name:a.name, face:a.face});
 }
 
 // An alien's hello, the moment it's first beamed aboard: worth 100, and it joins the roster.
@@ -1499,7 +1784,7 @@ const HighScores = (()=>{
 let lastShift = null;   // this shift's entry once it has ended, to light it up in the list
 function recordShift(){
   lastShift = {score:state.score, sector:state.sector, t:Date.now(),
-    roster:state.roster.map(m=>({name:m.name, src:m.src, face:m.face}))};
+    roster:state.roster.map(m=>({name:m.name, face:m.face}))};
   if(state.score>0) HighScores.record(lastShift);
 }
 function renderBestScores(){
@@ -1581,20 +1866,13 @@ function buildRoster(roster){
   el.appendChild(name);
   return {el, update};
 }
+// Older rosters also kept a Gravatar image link per alien; it's ignored now, and the alien's own face is drawn.
 function rosterFaceArt(m){
-  const drawn = ()=>{
-    const c = document.createElement('canvas');
-    c.width = c.height = 64;
-    const main = ctx; ctx = c.getContext('2d');
-    try{ drawWavatarFace(32, 32, 32, m.face || makeAlienFace()); } finally { ctx = main; }
-    return c;
-  };
-  if(!m.src) return drawn();
-  const img = new Image();
-  img.alt = '';
-  img.onerror = ()=>img.replaceWith(drawn());
-  img.src = m.src;
-  return img;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const main = ctx; ctx = c.getContext('2d');
+  try{ drawAlienFace(32, 32, 32, m.face || makeAlienFace()); } finally { ctx = main; }
+  return c;
 }
 
 // ---------- Structural damage ----------
@@ -2746,18 +3024,13 @@ function maybeTriggerDuplicate(a){
   }
 }
 function duplicateAlien(parent){
-  const clone = createAlien(true); // skip its own avatar fetch — it inherits the parent's face below
+  const clone = createAlien();
   clone.baseName = parent.baseName || parent.name;
   if(!state.alienCloneCounters[clone.baseName]) state.alienCloneCounters[clone.baseName] = 2;
   const num = state.alienCloneCounters[clone.baseName]++;
   clone.name = clone.baseName + ' #' + num;
 
-  // Exact same face as the parent, whether that's the procedural generator's data
-  // or (in gravatar mode) the same already-loading/loaded image.
-  clone.face = parent.face;
-  clone.avatarImg = parent.avatarImg;
-  clone.avatarLoaded = parent.avatarLoaded;
-  clone.avatarFailed = parent.avatarFailed;
+  clone.face = parent.face;   // exactly the same face as the parent
 
   clone.walksReverse = Math.random()<0.5;
   clone.greeted = true;
@@ -3948,18 +4221,7 @@ function drawAlienList(list){
     ctx.scale(a.scale,a.scale);
     const R=a.size;
 
-    if(ALIEN_FACE_MODE==='gravatar'){
-      if(a.avatarLoaded && a.avatarImg){
-        ctx.save();
-        ctx.beginPath(); ctx.arc(0,0,R*0.92,0,TAU); ctx.clip();
-        ctx.drawImage(a.avatarImg, -R*0.92, -R*0.92, R*1.84, R*1.84);
-        ctx.restore();
-      } else if(a.avatarFailed){
-        drawWavatarFace(0,0,R*0.92,a.face);
-      }
-    } else {
-      drawWavatarFace(0,0,R*0.92,a.face);
-    }
+    drawAlienFaceCached(R*0.92, a.face, a.scale*DPR);
 
     const grad=ctx.createRadialGradient(0,0,R*0.4, 0,0,R);
     grad.addColorStop(0,'rgba(150,158,168,0)');
@@ -5100,7 +5362,7 @@ const SaveGame = (()=>{
     if(str.startsWith('gz1:')) return JSON.parse(new TextDecoder().decode(await pipe(fromB64(str.slice(4)), new DecompressionStream('gzip'))));
     throw new Error('unknown save format');
   }
-  const ALIEN_SKIP = new Set(['avatarImg','ridingOn','rider','bubbleAt','carrying','rocksRolled']);
+  const ALIEN_SKIP = new Set(['ridingOn','rider','bubbleAt','carrying','rocksRolled']);
   function snapshot(){
     const aliens=[];
     for(const a of state.aliens){
@@ -5109,7 +5371,6 @@ const SaveGame = (()=>{
       for(const k in a) if(!ALIEN_SKIP.has(k)) o[k]=a[k];
       o.ridingOn = a.ridingOn ? a.ridingOn.id : null;
       o.rider = a.rider ? a.rider.id : null;
-      o.avatarSrc = a.avatarImg ? a.avatarImg.src : null;
       aliens.push(o);
     }
     return {
@@ -5194,24 +5455,11 @@ function restoreGame(d){
 
   // Aliens: rebuild objects, then relink stacks by id.
   const sx = d.W ? W/d.W : 1, sy = d.H ? H/d.H : 1;
-  const imgs = {}, byId = {};
+  const byId = {};
   const aliens = d.aliens.map(o=>{
-    const a = Object.assign(createAlien(true), o);
+    const a = Object.assign(createAlien(), o);
     a.x*=sx; a.baseX*=sx; a.y*=sy; a.baseY*=sy;
-    if(ALIEN_FACE_MODE==='gravatar'){
-      // same face as before; clones share one image
-      a.avatarLoaded=false; a.avatarFailed=false;
-      if(o.avatarSrc){
-        if(!imgs[o.avatarSrc]){
-          const img=new Image(), group=[];
-          img.onload=()=>group.forEach(x=>x.avatarLoaded=true);
-          img.onerror=()=>group.forEach(x=>{x.avatarLoaded=false; x.avatarFailed=true;});
-          img.src=o.avatarSrc; imgs[o.avatarSrc]={img, group};
-        }
-        a.avatarImg=imgs[o.avatarSrc].img; imgs[o.avatarSrc].group.push(a);
-      } else loadAlienAvatar(a);
-    }
-    delete a.avatarSrc;
+    for(const k of ['avatarSrc','avatarLoaded','avatarFailed']) delete a[k];   // left in saves from the Gravatar days
     byId[a.id]=a;
     return a;
   });
