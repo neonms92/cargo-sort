@@ -2716,13 +2716,11 @@ function hitAlien(pos){
   // Thrown aliens can be caught mid-air, but not ones on a scripted fall (booted by the arm, shaken off the ring).
   const candidates = state.aliens.filter(a=> (a.state==='floating' && state.irisOpen>0.5) || a.state==='settled' || a.state==='chute' ||
     (a.state==='falling' && !a.kicked && !a.fallToTrack2));
-  candidates.sort((a,b)=> b.scale - a.scale);
-  for(const a of candidates){
-    const d=Math.hypot(pos.x-a.x, pos.y-a.y);
-    const hitR = Math.max(a.size*a.scale*1.2, 24);
-    if(d < hitR) return a;
-  }
-  return null;
+  // Nearest-looking first among the hits, then nearest to the pointer (a packed airlock is all one depth).
+  const hits = candidates.map(a=>({a, d:Math.hypot(pos.x-a.x, pos.y-a.y)}))
+    .filter(h=> h.d < Math.max(h.a.size*h.a.scale*1.2, 24));
+  hits.sort((p,q)=> (q.a.scale-p.a.scale) || (p.d-q.d));
+  return hits.length ? hits[0].a : null;
 }
 function hitBarrel(pos, idx){
   if(state.barrels[idx].status!=='ready') return false; // carried off, gone, or still coming up
@@ -2764,7 +2762,7 @@ function onDown(e){
   if(a){
     e.preventDefault();
     breakStackAt(a); // everyone above tumbles off; anyone below keeps walking
-    if(a.state==='chute'){ a.message=choice(ALIEN_CHUTE_RESCUE_MESSAGES); a.bubbleT=2.5; a.tumbled=true; }
+    if(a.state==='chute'){ a.message=choice(ALIEN_CHUTE_RESCUE_MESSAGES); a.bubbleT=2.5; a.tumbled=true; a.rot=0; }
     if(!a.greeted){ greetAlien(a); a.tumbled = true; }   // said hello in the beam; nothing more when it lands
     else enlistAlien(a);
     state.held=a;
@@ -2937,7 +2935,7 @@ function releaseRock(r){
 }
 function releaseAlien(a){
   a.walksReverse = Math.random()<0.5;
-  if(!chuteOccupant() && hitChute(a)){ putAlienInChute(a); return; }
+  if(!chuteLaunching() && hitChute(a)){ putAlienInChute(a); return; }
   const iris=layout.iris;
   if(Math.hypot(a.x-iris.cx, a.y-iris.cy) < iris.r*0.92 && state.irisOpen>0.75 && a.y < layout.floorTop){
     forceFieldRebound(a);
@@ -2977,12 +2975,18 @@ function forceFieldRebound(a){
 }
 
 // ---- Airlock chute ----
-// The only way to really get rid of an alien: drop it into the glass box on the left wall, then
-// press LAUNCH. It's sucked out through the outer hatch and drifts past the iris window, waving
-// goodbye. Until launch it can be grabbed back out.
+// The only way to really get rid of aliens: drop them into the glass box on the left wall (as many
+// as you like; they tumble and pile up inside, and an overstuffed box jitters), then press LAUNCH.
+// Everyone is sucked out through the outer hatch, one after another, and drifts past the iris
+// window; no more than two of them get a word in on the way. Until launch they can be grabbed out.
 const CHUTE_SUCK_DUR = 0.45;     // shrinking out through the outer hatch
 const CHUTE_HATCH_DUR = 1.2;     // outer hatch stays open this long after launch
 const CHUTE_FLIGHT_DUR = 3.4;    // drifting across the iris window
+const CHUTE_LAUNCH_STAGGER = 0.14; // between one occupant going out of the hatch and the next
+const CHUTE_FAREWELL_MAX = 2;    // at most this many say goodbye on their way past the window
+const CHUTE_FAREWELL_SECONDS = 1.6; // how long each goodbye stays up
+const CHUTE_SECOND_VOICE_DELAY = 1.8; // the second voice leaves at least this long after the first
+const CHUTE_CROWD = 4;           // this many or more in the box and they start complaining about each other
 const ALIEN_CHUTE_ENTER_MESSAGES=[
   "Hey! What's this?",
   "Is this a sauna?",
@@ -3001,6 +3005,15 @@ const ALIEN_CHUTE_WAIT_MESSAGES=[
   "What's that button do?",
   "Don't press anything!",
 ];
+const ALIEN_CHUTE_CROWD_MESSAGES=[
+  "Personal space, please!",
+  "Ow, my antenna!",
+  "Who keeps elbowing me?",
+  "Is there a weight limit?",
+  "Someone's on my foot.",
+  "Room for one more? NO.",
+  "This is worse than the shuttle.",
+];
 const ALIEN_CHUTE_RESCUE_MESSAGES=[
   "Freedom!",
   "I knew you'd come around!",
@@ -3017,7 +3030,8 @@ const ALIEN_FAREWELL_MESSAGES=[
   "I'll write!",
   "Tell my clones I said hi!",
 ];
-function chuteOccupant(){ return state.aliens.find(a=> a.state==='chute' || a.state==='launching') || null; }
+function chuteOccupants(){ return state.aliens.filter(a=> a.state==='chute' || a.state==='launching'); }
+function chuteLaunching(){ return state.aliens.some(a=> a.state==='launching'); }
 function hitChute(pos){
   const c=layout.chute, m=18;
   return Math.abs(pos.x-c.x) <= c.w/2+m && Math.abs(pos.y-c.y) <= c.h/2+m;
@@ -3028,26 +3042,44 @@ function hitChuteButton(pos){
 }
 function putAlienInChute(a){
   throwVelocity();
+  const crowd = state.aliens.filter(o=>o.state==='chute').length;
   a.state='chute';
   a.walkPhase=null; a.fixitMode=false; a.tumbled=false; a.hideJumpOut=false;
   a.fvx=a.fvy=0;
   a.greeted = true;
-  a.message = choice(ALIEN_CHUTE_ENTER_MESSAGES);
+  // It drops in from where it was let go, kept inside the glass; the box's physics takes it from there.
+  const c=layout.chute, rad=chuteRadius(a);
+  a.x = clamp(a.x, c.x-c.w/2+rad, c.x+c.w/2-rad);
+  a.y = clamp(a.y, c.y-c.h/2+rad, c.y+c.h/2-rad);
+  a.cpx = a.x; a.cpy = a.y;
+  a.rot = a.rot || 0;
+  a.message = choice(crowd+1 >= CHUTE_CROWD ? ALIEN_CHUTE_CROWD_MESSAGES : ALIEN_CHUTE_ENTER_MESSAGES);
   a.bubbleT = 3;
   a.chuteTalkT = rand(7,11);
   AudioEngine.chuteAccept();
 }
+// Everyone in the box goes, one after another, in a random order. Two of them (at most) get to say
+// goodbye as they pass the window; the rest go quietly.
 function launchChute(){
-  const ch=state.chute, a=chuteOccupant();
+  const ch=state.chute, list=state.aliens.filter(a=>a.state==='chute');
   ch.press = 0.15;
-  if(!a || a.state!=='chute'){ AudioEngine.uiBlip(160); return; }
-  a.state='launching';
-  a.launchT=0;
-  state.roster = state.roster.filter(m=>m.id!==a.id);   // jettisoned: off the roster
-  a.chuteScale=a.scale;
-  a.bubbleT=0;
+  if(!list.length){ AudioEngine.uiBlip(160); return; }
+  for(let i=list.length-1;i>0;i--){ const j=randInt(0,i); [list[i],list[j]]=[list[j],list[i]]; }
+  const ids = new Set(list.map(a=>a.id));
+  state.roster = state.roster.filter(m=>!ids.has(m.id));   // jettisoned: off the roster
+  // The first one out speaks, and so does the last, held back if need be so its line comes after the
+  // first one's is over rather than on top of it.
+  const last=list.length-1;
+  list.forEach((a,i)=>{
+    a.state='launching';
+    let wait = i*CHUTE_LAUNCH_STAGGER;
+    if(i===last && i>0) wait = Math.max(wait, CHUTE_SECOND_VOICE_DELAY);
+    a.launchT = -wait;   // below zero: still in the box, being pulled to the hatch
+    a.farewell = i===0 || (i===last && CHUTE_FAREWELL_MAX>1);
+    a.bubbleT=0;
+  });
   ch.flash=1;
-  ch.hatchT=CHUTE_HATCH_DUR;
+  ch.hatchT=CHUTE_HATCH_DUR - Math.min(...list.map(a=>a.launchT));
   state.irisTarget=1; // open up so everyone gets to watch
   AudioEngine.airlock();
   maybeSpark(layout.chute.x + layout.chute.w*0.36*rand(-1,1), layout.chute.y - layout.chute.h*0.05 - layout.chute.w*0.3);
@@ -3062,7 +3094,7 @@ function startChuteFlight(a){
   a.x = cx - r*1.15; a.y = a.flightY0;
   a.rot = 0; a.spin = choice([-1,1])*rand(1.5,2.8);
   a.opacity = 1;
-  a.saidBye = false;
+  a.saidBye = !a.farewell;   // only the chosen few speak up
 }
 function updateChute(dt){
   const ch=state.chute;
@@ -3072,28 +3104,119 @@ function updateChute(dt){
   ch.hatch = lerp(ch.hatch, ch.hatchT>0 ? 1 : 0, Math.min(1, dt*(ch.hatchT>0 ? 9 : 4)));
   state.forceField.t = Math.max(0, state.forceField.t-dt);
 }
+// ---- Airlock physics ----
+// The occupants are balls (their helmets) in a box: gravity, bouncing off the glass and each other,
+// rolling as they go. It's position-based (Verlet) with a fixed number of solver passes, so a box
+// packed past what those passes can untangle never quite settles: everyone keeps shoving, and the
+// pile buzzes and jitters, like any physics engine asked to do too much.
+const CHUTE_GRAVITY = 520;       // px/s²
+const CHUTE_STEP = 1/120;        // fixed substep
+const CHUTE_ITERATIONS = 3;      // solver passes per substep (few on purpose; see above)
+const CHUTE_DAMP = 0.996;        // velocity kept per substep (air in the box)
+const CHUTE_BOUNCE = 0.35;       // share of speed kept bouncing off the glass
+const CHUTE_MAX_PUSH = 1.0;      // px the solver may move anyone per substep
+const CHUTE_SQUASH = 1;          // px of overlap left after solving that counts as squashed
+const CHUTE_SQUASH_KEEP = 0.75;  // share of speed a squashed occupant keeps per substep
+const CHUTE_MAX_STEP = 3;        // px per substep: a shove can't fling anyone through the glass
+const CHUTE_HATCH_PULL = 2600;   // px/s² towards the open hatch while waiting to go out
+let chuteAcc = 0;
+function chuteRadius(a){ return a.size*ALIEN_TRACK2_SCALE*0.95; }
+function stepChutePhysics(dt){
+  const list = state.aliens.filter(a=> a.state==='chute' || (a.state==='launching' && a.launchT<0));
+  if(!list.length){ chuteAcc=0; return; }
+  const c=layout.chute, x0=c.x-c.w/2, x1=c.x+c.w/2, y0=c.y-c.h/2, y1=c.y+c.h/2;
+  const hx=c.x, hy=c.y-c.h*0.05;   // the outer hatch (see drawChute)
+  chuteAcc = Math.min(chuteAcc + dt, CHUTE_STEP*8);
+  while(chuteAcc >= CHUTE_STEP){
+    chuteAcc -= CHUTE_STEP;
+    const h2 = CHUTE_STEP*CHUTE_STEP;
+    for(const a of list){
+      if(a.cpx===undefined || a.cpx===null){ a.cpx=a.x; a.cpy=a.y; }
+      let vx=(a.x-a.cpx)*CHUTE_DAMP, vy=(a.y-a.cpy)*CHUTE_DAMP;
+      const sp=Math.hypot(vx,vy); if(sp>CHUTE_MAX_STEP){ vx*=CHUTE_MAX_STEP/sp; vy*=CHUTE_MAX_STEP/sp; }
+      let ax=0, ay=CHUTE_GRAVITY;
+      if(a.state==='launching'){
+        const dx=hx-a.x, dy=hy-a.y, d=Math.hypot(dx,dy)||1;
+        ax = dx/d*CHUTE_HATCH_PULL; ay = dy/d*CHUTE_HATCH_PULL;
+      }
+      a.cpx=a.x; a.cpy=a.y;
+      a.x += vx + ax*h2; a.y += vy + ay*h2;
+      a.sx=a.x; a.sy=a.y;
+    }
+    for(let it=0; it<CHUTE_ITERATIONS; it++){
+      for(let i=0;i<list.length;i++){
+        const a=list[i], ra=chuteRadius(a);
+        for(let j=i+1;j<list.length;j++){
+          const b=list[j], rb=chuteRadius(b);
+          let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
+          const min=ra+rb;
+          if(d>=min) continue;
+          if(d<0.001){ dx=rand(-1,1); dy=rand(-1,1); d=Math.hypot(dx,dy)||1; }
+          const push=(min-d)/2, nx=dx/d, ny=dy/d;
+          a.x-=nx*push; a.y-=ny*push; b.x+=nx*push; b.y+=ny*push;
+        }
+      }
+      for(const a of list){
+        const r=chuteRadius(a);
+        // The glass: clamp inside, and bounce whatever was still heading into it (a Verlet body's
+        // velocity is x - cpx, so moving cpx past x reverses it, keeping CHUTE_BOUNCE of it).
+        if(a.x<x0+r){ a.x=x0+r; const v=a.x-a.cpx; if(v<0) a.cpx=a.x+v*CHUTE_BOUNCE; }
+        if(a.x>x1-r){ a.x=x1-r; const v=a.x-a.cpx; if(v>0) a.cpx=a.x+v*CHUTE_BOUNCE; }
+        if(a.y<y0+r){ a.y=y0+r; const v=a.y-a.cpy; if(v<0) a.cpy=a.y+v*CHUTE_BOUNCE; }
+        if(a.y>y1-r){ a.y=y1-r; const v=a.y-a.cpy; if(v>0) a.cpy=a.y+v*CHUTE_BOUNCE;
+          a.cpx = a.x - (a.x-a.cpx)*0.97; }   // and the floor has a little friction
+      }
+    }
+    // The solver can only shove anyone so far per substep. In a box packed past capacity that's
+    // what turns endless shoving into a buzz rather than a scramble.
+    for(const a of list){
+      const dx=a.x-a.sx, dy=a.y-a.sy, d=Math.hypot(dx,dy);
+      if(d>CHUTE_MAX_PUSH){ a.x=a.sx+dx/d*CHUTE_MAX_PUSH; a.y=a.sy+dy/d*CHUTE_MAX_PUSH; }
+      const r=chuteRadius(a);
+      a.x=clamp(a.x, x0+r, x1-r); a.y=clamp(a.y, y0+r, y1-r);
+    }
+    // Anyone still squashed into a neighbour after the solver gave up loses most of its speed: the
+    // overload shows up as a buzz instead of building into an explosion.
+    for(let i=0;i<list.length;i++){
+      const a=list[i], ra=chuteRadius(a);
+      for(let j=i+1;j<list.length;j++){
+        const b=list[j];
+        if(Math.hypot(b.x-a.x, b.y-a.y) < ra+chuteRadius(b)-CHUTE_SQUASH){
+          a.cpx=lerp(a.x,a.cpx,CHUTE_SQUASH_KEEP); a.cpy=lerp(a.y,a.cpy,CHUTE_SQUASH_KEEP);
+          b.cpx=lerp(b.x,b.cpx,CHUTE_SQUASH_KEEP); b.cpy=lerp(b.y,b.cpy,CHUTE_SQUASH_KEEP);
+        }
+      }
+    }
+    // rolling: helmets turn as they move
+    for(const a of list) a.rot = ((a.rot||0) + (a.x-a.cpx)/chuteRadius(a)) % TAU;
+  }
+}
 function updateChuteAlien(a, dt){
   const c=layout.chute;
   if(a.state==='chute'){
-    // The chute is on the wall above track 2, so its occupant is drawn at track 2's depth.
+    // The chute is on the wall above track 2, so its occupants are drawn at track 2's depth.
     a.scale = lerp(a.scale, ALIEN_TRACK2_SCALE, Math.min(1, dt*6));
-    a.x = c.x + Math.sin(state.t*0.9+a.phase)*c.w*0.07;
-    a.y = c.y + c.h*0.1 + Math.sin(state.t*1.7+a.phase)*2;
     a.baseX=a.x; a.baseY=a.y;
     a.chuteTalkT -= dt;
+    // One voice at a time in there; a crowded box complains about the crowd.
     if(a.chuteTalkT<=0 && a.bubbleT<=0){
-      a.message = choice(ALIEN_CHUTE_WAIT_MESSAGES);
-      a.bubbleT = 3;
       a.chuteTalkT = rand(8,13);
+      const inside = state.aliens.filter(o=>o.state==='chute');
+      if(!inside.some(o=>o!==a && o.bubbleT>0)){
+        a.message = choice(inside.length>=CHUTE_CROWD ? ALIEN_CHUTE_CROWD_MESSAGES : ALIEN_CHUTE_WAIT_MESSAGES);
+        a.bubbleT = 3;
+      }
     }
   } else if(a.state==='launching'){
     a.launchT += dt;
+    if(a.launchT<0) return;            // still waiting its turn (the physics pulls it to the hatch)
+    if(a.chuteScale===undefined || a.chuteScale===null) a.chuteScale=a.scale;
     const u = clamp(a.launchT/CHUTE_SUCK_DUR, 0, 1);
     a.scale = a.chuteScale*(1 - 0.85*u*u);
     a.opacity = 1 - u*u;
     a.x = lerp(a.x, c.x, Math.min(1, dt*10));
     a.y = lerp(a.y, c.y - c.h*0.05, Math.min(1, dt*10));
-    if(u>=1) startChuteFlight(a);
+    if(u>=1){ a.chuteScale=null; startChuteFlight(a); }
   } else if(a.state==='spaced'){
     const {cx,r}=layout.iris;
     a.flightT += dt;
@@ -3107,7 +3230,7 @@ function updateChuteAlien(a, dt){
     if(!a.saidBye && a.x > cx - r*0.8){
       a.saidBye = true;
       a.message = choice(ALIEN_FAREWELL_MESSAGES);
-      a.bubbleT = CHUTE_FLIGHT_DUR*0.68;
+      a.bubbleT = CHUTE_FAREWELL_SECONDS;
     }
     if(u>=1) a.state='gone';
   }
@@ -3858,6 +3981,7 @@ function update(){
   updateArm(dt);
   updateBarrelSlots(dt);
   updateChute(dt);
+  stepChutePhysics(dt);
   updateIrisSparks(dt);
   updatePlumes(dt);
   updateRumble(dt);
@@ -4814,7 +4938,7 @@ function drawForceField(){
 const layerChuteBack=makeLayer(), layerChuteGlass=makeLayer();
 let starsGen=0;
 function drawChute(){
-  const c=layout.chute, ch=state.chute, occ=chuteOccupant();
+  const c=layout.chute, ch=state.chute, occ=chuteOccupants(), armed=occ.some(a=>a.state==='chute');
   const x0=c.x-c.w/2, y0=c.y-c.h/2, F=Math.max(5, c.w*0.07);   // frame width (computeLayout assumes the same)
   const m=F+3, lx=x0-m, ly=y0-m, lw=c.w+m*2, lh=c.h+m*2;
   if(!state.stars.gen) state.stars.gen=++starsGen;
@@ -4860,11 +4984,11 @@ function drawChute(){
     ctx.restore();
     ctx.restore();
   });
-  // occupant, inside the glass
-  if(occ){
+  // occupants, inside the glass (antennae poke past the helmets, so clip a little outside it)
+  if(occ.length){
     ctx.save();
     ctx.beginPath(); ctx.rect(x0,y0,c.w,c.h); ctx.clip();
-    drawAlienList([occ]);
+    drawAlienList(occ);
     ctx.restore();
   }
   // glass front: a tint, two highlight streaks, a cyan edge; white flash on launch
@@ -4897,13 +5021,13 @@ function drawChute(){
   else paintLayer(layerChuteGlass, layoutGen+'|'+DPR+'|'+holoFontGen, lx, ly, lw, lh, glass);
   // occupancy light
   ctx.save();
-  const lit = occ && occ.state==='chute' && Math.sin(state.t*Math.PI*2.4)>0;
+  const lit = armed && Math.sin(state.t*Math.PI*2.4)>0;
   ctx.fillStyle = lit ? '#ffb648' : '#4a3a1e';
   if(lit){ ctx.shadowColor='#ffb648'; ctx.shadowBlur=10; }
   ctx.beginPath(); ctx.arc(x0+c.w+F*0.5, c.y, Math.max(2, F*0.32), 0, TAU); ctx.fill();
   ctx.shadowBlur=0;
   ctx.restore();
-  drawChuteButton(!!occ && occ.state==='chute');
+  drawChuteButton(armed);
 }
 // The scoreboard: the shift's SCORE, relabelled BEST once it pulls ahead of every earlier shift (the
 // best score before any shift starts), on a softly glowing screen that flickers now and then.
