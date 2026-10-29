@@ -58,31 +58,22 @@ window.CARGO_MODE = (function(){
     ud:   {words:[['mud','bud','thud','stud'], ['blood','flood'], []]},
     uff:  {words:[['puff','cuff','fluff','stuff'], ['rough','tough','enough'], []]},
     off:  {words:[['off','scoff'], ['cough','trough'], []]},
-    // Slant rhymes: same vowel, different ending. Kill-screen near misses only.
-    oot:  {slant:1, words:[['boot','shoot','root'], ['fruit','suit'], []]},
-    ide:  {slant:1, words:[['ride','side','tide'], ['wide','guide'], []]},
-    ape:  {slant:1, words:[['cape','tape','grape'], ['shape'], []]},
-    ap:   {slant:1, words:[['cap','map','nap'], ['tap','clap'], []]},
-    ung:  {slant:1, words:[['sung','lung','hung'], ['tongue','young'], []]},
-    eep:  {slant:1, words:[['sheep','deep','keep'], ['jeep','sleep'], []]},
   };
   // Families that share a spelling but not a sound: one barrel against the other is the trap.
   const TWINS = [['own','oan'], ['oo','oh'], ['ow','oh'], ['air','eer'], ['ed','eed'], ['un','oan'],
                  ['ate','eet'], ['eet','et'], ['urd','ord'], ['ohm','um'], ['uff','off'], ['ood','uud']];
   const TRIPLES = [['uv','oov','ohv'], ['ood','uud','ud'], ['ate','eet','et'], ['oo','oh','ow']];
-  // Whole-sector clusters: every barrel and near miss shares a spelling (-ough, -ea-, -o-e, -oo-, -ow).
+  // Whole-sector clusters: every barrel shares a spelling (-ough, -ea-, -o-e, -oo-, -ow).
   const CLUSTERS = [['uff','off','oh','oo','ow'], ['ed','eed','eet','et','ate','air','eer'], ['uv','oov','ohv','um','ohm','oan'],
                     ['ood','uud','ud','oo'], ['ow','oh','own','oan']];
-  const SLANT = {oo:'oot', ight:'ide', ake:'ape', at:'ap', un:'ung', ee:'eep'};
   const shuffle = a => a.slice().sort(()=>Math.random()-0.5);
   const tierFor = band => band.i>=2 ? 3 : band.i>=1 ? 2 : 1;
   const wordCount = (k, band) => [].concat(...FAMILIES[k].words.slice(0, tierFor(band))).length;
-  // Families a band may put on a barrel: enough words to fill one, never a slant family.
-  const usable = band => Object.keys(FAMILIES).filter(k=> !FAMILIES[k].slant && (band.i>=1 || FAMILIES[k].basic) && wordCount(k,band)>=4);
+  // Families a band may put on a barrel: enough words to fill one.
+  const usable = band => Object.keys(FAMILIES).filter(k=> (band.i>=1 || FAMILIES[k].basic) && wordCount(k,band)>=4);
   const twinsOf = k => TWINS.filter(p=>p.includes(k)).map(p=>p[0]===k ? p[1] : p[0]);
   // band 0: four plain families · 1: any, no twins together · 2: one twin pair · 3: two twin pairs ·
-  // 4: a triple · 5+: one cluster. Near misses (band 3 on): twins of the barrels' families not on a
-  // barrel, then the rest of their spelling cluster; kill screens add slant rhymes.
+  // 4: a triple · 5+: one cluster.
   function planSector(sector, band){
     const U = usable(band);
     let fams = [];
@@ -106,15 +97,7 @@ window.CARGO_MODE = (function(){
       if(fams.includes(k) || (band.i<=1 && twinsOf(k).some(t=>fams.includes(t)))) continue;
       fams.push(k);
     }
-    let decoys = [];
-    if(band.i>=3){
-      decoys = [...new Set(fams.flatMap(twinsOf))].filter(k=>!fams.includes(k));
-      // then the rest of any spelling cluster the barrels share
-      CLUSTERS.forEach(c=>{ if(fams.filter(k=>c.includes(k)).length>=2) decoys.push(...c.filter(k=>!fams.includes(k))); });
-      if(band.i>=6) fams.forEach(k=>{ if(SLANT[k]) decoys.push(SLANT[k]); });
-      decoys = [...new Set(decoys)];
-    }
-    return {values: fams.map(key=>({key})), decoys: decoys.map(key=>({key}))};
+    return {values: fams.map(key=>({key}))};
   }
   const recent = [];   // don't repeat a word for a while
   return {

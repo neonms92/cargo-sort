@@ -147,7 +147,7 @@ window.CARGO_MODE = (function(){
   // Which verbs go on the barrels together. Learning: plain verbs with stems that look nothing alike.
   // Gets it: one stem changes. Invested: one changes past recognition (ser: fue, era; ir: iba, vaya).
   // Deciding and committed: one or two look-alike pairs (pude/puse). Impressive on: a whole family of
-  // look-alike stems (vino, vio, vendió, vivió). Near misses: a look-alike of a barrel's verb.
+  // look-alike stems (vino, vio, vendió, vivió).
   const STARTERS = ['hablar','comer','vivir','tener','cantar','bailar','beber','escribir'];
   const CHANGERS = ['tener','hacer','querer','poder','decir','venir','perder','dormir','pedir','estar'];
   const SUPPLETIVE = ['ser','ir'];
@@ -235,17 +235,7 @@ window.CARGO_MODE = (function(){
     }
     const fill = band.i===0 ? STARTERS : band.i<=2 ? STARTERS.concat(CHANGERS) : Object.keys(VERBS);
     for(const v of shuffle(fill)){ if(verbs.length>=4) break; if(band.i>=3 || apart(v)) add(v); }
-    let decoys = [];
-    if(band.i>=3){
-      decoys = [...new Set(verbs.flatMap(pairedWith))].filter(v=>!verbs.includes(v));
-      if(band.i>=5) FAMILIES.forEach(f=>{ if(verbs.every(v=>f.includes(v))) f.forEach(v=>{ if(!verbs.includes(v)) decoys.push(v); }); });
-      // nothing left over: any verb that starts like one on the barrels, or else ends like one (deber, beber)
-      const like = f => Object.keys(VERBS).filter(v=>!verbs.includes(v) && verbs.some(x=>f(x)===f(v)));
-      if(!decoys.length) decoys = like(v=>v.slice(0,1));
-      if(!decoys.length) decoys = like(v=>v.slice(-3));
-      decoys = [...new Set(decoys)];
-    }
-    return {values: verbs.map(key=>({key})), decoys: decoys.map(key=>({key}))};
+    return {values: verbs.map(key=>({key}))};
   }
 
   const recent = [];   // don't repeat a form for a while

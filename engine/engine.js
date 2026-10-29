@@ -9,8 +9,8 @@
 //                         "Sort the <things> by their <property>." (everything else is left to discover)
 //   scanLabel             caption over the scanner readout
 //   pickValue(sector)     a random value for this sector: any plain object with a `key`
-//   planSector(sector, band)  optional; the sector's manifest {values, decoys}: the four values the
-//                         barrels should hold, and near misses that belong in none of them (see pickSpawnValue)
+//   planSector(sector, band)  optional; the sector's manifest {values}: the four values the barrels
+//                         should hold, as alike as the band calls for (see pickSpawnValue)
 //   makeItem(value, sector, labels)  how one rock shows that value: {rep, text, glyph?}
 //                         (labels: texts the barrels are showing right now)
 //   same(a, b)            optional; values match (default: same key)
@@ -958,7 +958,7 @@ const state={
   // Robot arm: one job at a time; sealed barrels wait in `queue` (barrel indices, FIFO).
   arm:{queue:[], job:null, door:0, shY:0, wrist:null, carrying:-1, side:1, fk:null},
   rocks:[],
-  // This sector's manifest from the protocol: {values, decoys} (see pickSpawnValue).
+  // This sector's manifest from the protocol: {values} (see pickSpawnValue).
   plan:null,
   aliens:[],
   alienSpawnedThisSector:false,
@@ -1047,10 +1047,10 @@ function makeCraters(size){
   return c;
 }
 // ---- Difficulty ----
-// Difficulty is ambiguity, never a shortage: every rock either fits an open barrel (or the barrel the
-// sector's manifest has lined up for an empty one), or from sector 9 on is a deliberate near miss that
-// belongs in none of them (8/9 against 7/8, "hoe" against "shoe"). The protocol picks the manifest to be
-// as confusable as the band calls for; the bands follow the player's arc:
+// Difficulty is ambiguity, never a shortage: every rock fits an open barrel (or the barrel the sector's
+// manifest has lined up for an empty one). The lever is similarity: the protocol picks the manifest's
+// values to be more alike as the bands go on (7/8 beside 8/9, "shoe" beside "hoe"). The bands follow
+// the player's arc:
 //   0: sectors 1-2 learning · 1: 3-5 gets it · 2: 6-8 invested · 3: 9-14 deciding · 4: 15-19 committed
 //   5: 20-29 impressive · 6: 30+ kill screens, tightening every sector (kill = sectors past 29)
 function sectorBand(sector){
@@ -1058,11 +1058,6 @@ function sectorBand(sector){
   return {i, kill: Math.max(0, sector-29)};
 }
 window.CARGO_BAND = sectorBand;   // protocols size their own content by it
-// Share of new rocks that are near misses, once every open barrel has its value.
-function decoyRate(sector){
-  const b=sectorBand(sector);
-  return [0, 0, 0, 0.10, 0.15, 0.20, Math.min(0.30, 0.20+0.01*b.kill)][b.i];
-}
 function planSector(sector){
   state.plan = MODE.planSector ? MODE.planSector(sector, sectorBand(sector)) : null;
 }
@@ -1079,9 +1074,6 @@ function pickSpawnValue(){
   if(empties>0) wanted=wanted.concat(plan.values.filter(v=>!has(armed,v) && !has(sealed,v)));
   if(!wanted.length) wanted=plan.values.filter(v=>!has(sealed,v));
   if(!wanted.length) return MODE.pickValue(state.sector);
-  // a near miss only once there's no empty barrel it could rightly open
-  const decoys=(plan.decoys||[]).filter(v=>!has(armed,v) && !has(wanted,v));
-  if(empties===0 && decoys.length && Math.random()<decoyRate(state.sector)) return choice(decoys);
   // whatever is scarcest in the bay comes next
   const loose=state.rocks.filter(r=>r.state==='floating' || r.state==='settled');
   const w=wanted.map(v=>1/(1+loose.filter(r=>sameValue(r.value,v)).length));
@@ -3554,8 +3546,8 @@ function pressRedButton(){
 
 // Every rock that goes into a barrel (not one bouncing off a sealed lid) is remembered for the display
 // under the score: the rock, the label of the barrel it went in, and after a mismatch the label of a
-// barrel it did belong in (null: none was out, so an empty barrel; {out:true}: a near miss that fits no
-// barrel and should have gone back out of the iris). Called before the barrel changes.
+// barrel it did belong in (null: none was out, so an empty barrel; {out:true}: it fits no
+// barrel, say a leftover whose barrel was sealed, and should have gone back out of the iris). Called before the barrel changes.
 function noteDrop(idx, r){
   const barrel=state.barrels[idx];
   const label=b=>({text:b.text, glyph:b.glyph||null});

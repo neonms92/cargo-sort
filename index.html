@@ -34,7 +34,6 @@ window.CARGO_MODE = (function(){
   // A sector's four barrel values. The band sets how many close pairs there are and how close:
   //   0: all at least 0.15 apart · 1: one pair within 0.1 · 2: one pair within 0.05 · 3: two pairs within 0.05
   //   4: two pairs within 0.03 · 5: all four inside a window 0.1 wide · 6: that window shrinks to 0.03
-  // Near misses are other values within a whisker of one on the barrels.
   function planSector(sector, band){
     const U = universe(band);
     const ok = (set, v) => !set.some(x=>x.key===v.key || clash(x,v,sector));
@@ -67,16 +66,7 @@ window.CARGO_MODE = (function(){
       if(set.length===4) values=set;
     }
     if(!values){ values=[]; while(values.length<4){ const v=choice(U); if(ok(values,v)) values.push(v); } }
-    let decoys=[];
-    if(band.i>=3){
-      const reach = [0,0,0, 0.05, 0.04, 0.03, Math.max(0.015, 0.03-0.002*band.kill)][band.i];
-      const pool = band.i>=5 ? universe({i:4}) : U;
-      // widen the reach until something's close enough to tempt
-      for(let r=reach; !decoys.length && r<=0.2; r*=2)
-        decoys = pool.filter(v=> ok(values,v) && values.some(x=>Math.abs(x.decimal-v.decimal)<=r));
-      decoys = decoys.sort(()=>Math.random()-0.5).slice(0,6);
-    }
-    return {values, decoys};
+    return {values};
   }
   const rand=(a,b)=>a+Math.random()*(b-a);
   function makeValue(n,d){

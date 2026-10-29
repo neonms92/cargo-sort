@@ -97,14 +97,13 @@ window.CARGO_MODE = (function(){
     conjunction:['whereas','lest','whilst','albeit'],
     interjection:['alas','egad','zounds','gadzooks','huzzah'],
   };
-  // Types that get mixed up with each other, for confusable barrels and near misses.
+  // Types that get mixed up with each other, for confusable barrels.
   const CONFUSE = {preposition:['conjunction','adverb'], conjunction:['preposition'], adjective:['adverb'], adverb:['adjective','preposition'],
                    noun:['verb','pronoun'], verb:['noun'], pronoun:['noun'], interjection:['adverb']};
   const CORE = ['noun','verb','adjective','adverb'], ALL = Object.keys(TYPES);
   const shuffle = a => a.slice().sort(()=>Math.random()-0.5);
   // band 0-1: the four core types · 2: any four · 3+: four that include confusable pairs (3: one or two,
-  // 4: two) · 5+: the core four, so whole root families can be sorted apart. Near misses from band 3:
-  // a type confusable with one on the barrels.
+  // 4: two) · 5+: the core four, so whole root families can be sorted apart.
   function planSector(sector, band){
     let types;
     if(band.i<=1 || band.i>=5) types = CORE.slice();
@@ -119,11 +118,7 @@ window.CARGO_MODE = (function(){
       }
       for(const k of shuffle(ALL)) if(types.length<4 && !types.includes(k)) types.push(k);
     }
-    const decoys = band.i<3 ? [] : [...new Set(types.flatMap(k=>CONFUSE[k]))].filter(k=>!types.includes(k));
-    // the kill screens mix in every other type as a near miss too (as does any band whose barrels
-    // already hold every confusable type)
-    if(band.i>=6 || (band.i>=3 && !decoys.length)) ALL.forEach(k=>{ if(!types.includes(k) && !decoys.includes(k)) decoys.push(k); });
-    return {values: types.map(key=>({key})), decoys: decoys.map(key=>({key}))};
+    return {values: types.map(key=>({key}))};
   }
   function poolFor(key, sector){
     const band = CARGO_BAND(sector);
