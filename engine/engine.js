@@ -1,6 +1,6 @@
 // Cargo Bay — shared game engine.
-// Each matching system is its own page (index.html = oxygen fractions, words/ = word types, rhymes/, conjugation/ = Spanish verbs). A page
-// defines window.CARGO_MODE, then loads this file, which injects the styles and HUD markup and runs
+// Each matching system is its own page (index.html = oxygen fractions, words/ = word types, rhymes/, conjugation/ = Spanish verbs,
+// notes/ = musical notes). A page defines window.CARGO_MODE, then loads this file, which injects the styles and HUD markup and runs
 // the game. Everything here is common, so engine updates reach every mode at once.
 //
 // window.CARGO_MODE:
@@ -17,6 +17,8 @@
 //   repLabel(item)        optional; line beside the readout while a rock is held (\n breaks lines)
 //   readoutHTML(item)     optional; custom scanner markup (default: item.text)
 //   drawGlyph(ctx, glyph, x, y, r, colors)  optional; draws item.glyph on a barrel hologram, returns true
+//   glyphAspect(glyph)    optional; width over height of a glyph wider than it is tall (drawGlyph then
+//                         gets r for half its height), for the drop explainer's boxes
 //   translate(text)       optional; English for a rock's or barrel's text, shown when a drop is explained
 //   correction(rock, shown, sector)  optional; after a mismatch, the rock's value written the way the barrel's label
 //                         (shown: its first item) writes its own, as {text, glyph?, en?}; null falls back to a
@@ -315,6 +317,7 @@ const MODES = [
   {id:'words', name:'WORD TYPES', path:'words/'},
   {id:'rhymes', name:'RHYMES',     path:'rhymes/'},
   {id:'conjugation', name:'SPANISH VERBS', path:'conjugation/'},
+  {id:'notes', name:'MUSICAL NOTES', path:'notes/'},
 ];
 // Snapshot of this page's own markup, taken before the engine touches the DOM; the live-update
 // check compares it (plus this file's text) against freshly fetched copies (see bottom of file).
@@ -5387,13 +5390,15 @@ function dropBox(cls, item, tag){
   const box=document.createElement('div'); box.className=cls;
   let drawn=false;
   if(item && item.glyph && MODE.drawGlyph){
-    const cv=document.createElement('canvas'), px=Math.round(40*DPR);
-    cv.width=cv.height=px;
+    const asp = MODE.glyphAspect ? MODE.glyphAspect(item.glyph) : 1;
+    const cv=document.createElement('canvas');
+    cv.width=Math.round(40*asp*DPR); cv.height=Math.round(40*DPR);
+    cv.style.width=Math.round(40*asp)+'px';
     const o=cv.getContext('2d');
     if(o){
       o.setTransform(DPR,0,0,DPR,0,0);
       const col = cls==='ddRock' ? '255,241,220' : '91,230,217';
-      drawn = MODE.drawGlyph(o, item.glyph, 20, 20, 18, {fill:'rgb('+col+')', empty:'rgba('+col+',0.12)', line:'rgba('+col+',0.8)'});
+      drawn = MODE.drawGlyph(o, item.glyph, 20*asp, 20, 18, {fill:'rgb('+col+')', empty:'rgba('+col+',0.12)', line:'rgba('+col+',0.8)'});
       if(drawn) box.appendChild(cv);
     }
   }

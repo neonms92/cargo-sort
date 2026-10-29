@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Cargo Bay: Note Sort Protocol</title>
+</head>
+<body>
+<script>
+// Matching system: musical pitch. Each rock carries one pitch (A, B♭, ...) written some way: a letter,
+// a solfège syllable (fixed do, so Do is always C), a note on a staff, or a key lit up on a keyboard.
+// Barrels match on the pitch alone, so the octave never matters and A♯ goes in with B♭.
+// The game itself is the shared engine (../engine/engine.js); see the interface notes there.
+window.CARGO_MODE = (function(){
+  const choice=(arr)=>arr[Math.floor(Math.random()*arr.length)];
+  const pick=(list)=>{   // weighted: each entry has a `w`
+    let t=Math.random()*list.reduce((s,x)=>s+x.w,0);
+    for(const x of list){ t-=x.w; if(t<=0) return x; }
+    return list[list.length-1];
+  };
+  const shuffle = a => a.slice().sort(()=>Math.random()-0.5);
+
+  // A spelling is a letter (0 = C ... 6 = B) plus an accidental (-2 double flat ... 2 double sharp).
+  const LET='CDEFGAB', SOL=['Do','Re','Mi','Fa','So','La','Ti'], NAT=[0,2,4,5,7,9,11];
+  const ACC={'-2':'♭♭', '-1':'♭', '0':'', '1':'♯', '2':'♯♯'};
+  const mod = (n,m) => ((n%m)+m)%m;
+  const pcOf = sp => mod(NAT[sp.l]+sp.a, 12);
+  const letterText = sp => LET[sp.l]+ACC[sp.a];
+  const solText = sp => SOL[sp.l]+ACC[sp.a];
+  // E♯, B♯, F♭ and C♭: real spellings of white keys, saved for long runs
+  const odd = sp => (sp.a===1 && (sp.l===2||sp.l===6)) || (sp.a===-1 && (sp.l===3||sp.l===0));
+  // Clefs by the note on the bottom line, as a step (letter + 7 per octave; middle C = 28).
+  const CLEFS = {treble:{bottom:2+28, label:'TREBLE CLEF'}, bass:{bottom:4+14, label:'BASS CLEF'}, alto:{bottom:3+21, label:'ALTO CLEF'}};
+
+  // What each band (CARGO_BAND in the engine) brings in. Difficulty is how alike things look:
+  //   0 (sectors 1-2)  letters, Do Re Mi and a one-octave keyboard, natural notes only
+  //   1 (3-5)          notes on the treble staff
+  //   2 (6-8)          bass staff, where the same spot means another note; the keyboard starts anywhere
+  //   3 (9-14)         sharps and flats (A♯ and B♭ go in the same barrel)
+  //   4 (15-19)        notes above and below the staff on ledger lines
+  //   5 (20-29)        alto clef, and E♯ = F, C♭ = B
+  //   6 (30+)          double sharps and flats, ever more of them
+  function repsFor(band){
+    const r=[{rep:'letter',w:1}, {rep:'solfege',w:1}, {rep:'piano',w:1}];
+    if(band.i>=1) r.push({rep:'treble',w:1.5});
+    if(band.i>=2) r.push({rep:'bass',w:1.5});
+    if(band.i>=5) r.push({rep:'alto',w:1.5});
+    return r;
+  }
+  // Staff spots a note may sit on, counted in lines and spaces up from the bottom line.
+  const spotsFor = band => band.i>=6 ? [-6,14] : band.i>=4 ? [-5,13] : [-1,9];
+  const universe = band => band.i>=3 ? [0,1,2,3,4,5,6,7,8,9,10,11] : NAT;
+  function spellings(pc, band){
+    const out=[];
+    for(let l=0;l<7;l++){
+      const a=mod(pc-NAT[l]+6, 12)-6, sp={l,a};
+      if(a===0) out.push({sp, w:1});
+      else if(Math.abs(a)===1 && band.i>=3 && !odd(sp)) out.push({sp, w:1});
+      else if(Math.abs(a)===1 && band.i>=5) out.push({sp, w:0.4});
+      else if(Math.abs(a)===2 && band.i>=6) out.push({sp, w:Math.min(0.6, 0.25+0.03*band.kill)});
+    }
+    return out;
+  }
+
+  // A sector's four barrel pitches, as alike as the band calls for:
+  //   0: any four · 1: two neighbours on the staff (E, F) · 2: also two a third apart (E, G: the same
+  //   spot in treble and bass) · 3: a half step (A, B♭) and a third · 4: two half steps ·
+  //   5: all four within six half steps · 6: that window narrows to four in a row
+  function planSector(sector, band){
+    const U=universe(band);
+    const semis=(a,b)=>Math.min(mod(a-b,12), mod(b-a,12));
+    const letterGap=(a,b)=>{ const i=NAT.indexOf(a), j=NAT.indexOf(b); return i<0||j<0 ? -1 : Math.min(mod(i-j,7), mod(j-i,7)); };
+    let set=[];
+    const addPair=(rel)=>{
+      for(let t=0;t<40;t++){
+        const a=choice(U), b=choice(U);
+        if(a!==b && rel(a,b) && !set.includes(a) && !set.includes(b)){ set.push(a,b); return; }
+      }
+    };
+    if(band.i>=5){
+      const span = band.i===5 ? 6 : Math.max(4, 6-Math.floor(band.kill/4));
+      const lo=Math.floor(Math.random()*12);
+      set = shuffle(Array.from({length:span}, (_,k)=>(lo+k)%12)).slice(0,4);
+    } else {
+      if(band.i===1 || band.i===2) addPair((a,b)=>letterGap(a,b)===1);
+      if(band.i===2 || band.i===3) addPair((a,b)=>letterGap(a,b)===2);
+      if(band.i>=3) addPair((a,b)=>semis(a,b)===1);
+      if(band.i===4) addPair((a,b)=>semis(a,b)===1);
+    }
+    for(const pc of shuffle(U)){ if(set.length>=4) break; if(!set.includes(pc)) set.push(pc); }
+    return {values: set.slice(0,4).map(valueOf)};
+  }
+  const valueOf = pc => ({key:'pc'+pc, pc});
+
+  // ---------- Notation art ----------
+  // Built from a few paths in staff spaces (staff lines at y = 0..4, top to bottom), so the same art
+  // goes on a canvas (barrel holograms, the drop explainer) and into the scanner as SVG.
+  // An op is {d, fill?, stroke?, w?, eo?}; fill and stroke name a colour: ink, line, empty or dark.
+  const f = n => +n.toFixed(3);
+  function ellD(cx,cy,rx,ry,rot){
+    const c=Math.cos(rot), s=Math.sin(rot), deg=f(rot*180/Math.PI);
+    const x1=f(cx+rx*c), y1=f(cy+rx*s), x2=f(cx-rx*c), y2=f(cy-rx*s);
+    return `M${x1} ${y1}A${f(rx)} ${f(ry)} ${deg} 1 0 ${x2} ${y2}A${f(rx)} ${f(ry)} ${deg} 1 0 ${x1} ${y1}Z`;
+  }
+  const dot = (x,y,r) => ({d:ellD(x,y,r,r,0), fill:'ink'});
+  const CLEF_ART = {
+    // the curl wraps the G line (y = 3)
+    treble:{ops:[
+      {d:'M1.42 3.18C1.62 2.72 1.1 2.42 0.82 2.85C0.55 3.3 0.95 3.82 1.5 3.75C2.2 3.65 2.35 2.6 1.75 2.2'+
+         'C1.1 1.8 0.35 2.2 0.38 2.95C0.42 3.6 0.9 4.05 1.45 4.05'+
+         'M1.75 2.2C0.9 1.5 0.55 1.0 0.9 0.2C1.2 -0.45 1.85 -0.9 1.75 -1.5C1.65 -2.0 1.15 -1.75 1.1 -1.0'+
+         'C1.05 0.2 1.35 3.4 1.45 4.9C1.5 5.6 0.85 5.75 0.62 5.25', stroke:'ink', w:0.2},
+      dot(0.82,5.2,0.3)]},
+    // the dots sit either side of the F line (y = 1)
+    bass:{ops:[
+      dot(0.62,1.0,0.36),
+      {d:'M0.5 1.0C0.35 0.1 1.3 -0.25 1.85 0.25C2.45 0.85 2.1 2.3 0.35 3.45', stroke:'ink', w:0.24},
+      dot(2.55,0.5,0.17), dot(2.55,1.5,0.17)]},
+    // the C clef points at middle C (y = 2)
+    alto:{ops:[
+      {d:'M0.3 -0.1H0.72V4.1H0.3Z', fill:'ink'},
+      {d:'M0.98 -0.1V4.1', stroke:'ink', w:0.14},
+      {d:'M1.05 2.0L1.4 1.45C1.55 1.85 2.35 1.95 2.35 0.95C2.35 0.0 1.45 -0.1 1.35 0.5'+
+         'M1.05 2.0L1.4 2.55C1.55 2.15 2.35 2.05 2.35 3.05C2.35 4.0 1.45 4.1 1.35 3.5', stroke:'ink', w:0.17},
+      dot(1.5,0.55,0.24), dot(1.5,3.45,0.24)]},
+  };
+  function accidentalOps(a, cx, cy){
+    const sharp = x => [
+      {d:`M${f(x-0.2)} ${f(cy-0.95)}V${f(cy+1.15)}M${f(x+0.2)} ${f(cy-1.15)}V${f(cy+0.95)}`, stroke:'ink', w:0.1},
+      {d:`M${f(x-0.42)} ${f(cy-0.18)}L${f(x+0.42)} ${f(cy-0.42)}M${f(x-0.42)} ${f(cy+0.42)}L${f(x+0.42)} ${f(cy+0.18)}`, stroke:'ink', w:0.22}];
+    const flat = x => [
+      {d:`M${f(x-0.22)} ${f(cy-1.65)}V${f(cy+0.5)}C${f(x+0.6)} ${f(cy+0.05)} ${f(x+0.5)} ${f(cy-0.7)} ${f(x-0.22)} ${f(cy-0.12)}`, stroke:'ink', w:0.15}];
+    if(a===1) return sharp(cx);
+    if(a===-1) return flat(cx);
+    if(a===-2) return flat(cx-0.4).concat(flat(cx+0.3));
+    return [{d:`M${f(cx-0.34)} ${f(cy-0.34)}L${f(cx+0.34)} ${f(cy+0.34)}M${f(cx+0.34)} ${f(cy-0.34)}L${f(cx-0.34)} ${f(cy+0.34)}`, stroke:'ink', w:0.17},
+            dot(cx-0.36,cy-0.36,0.12), dot(cx+0.36,cy-0.36,0.12), dot(cx-0.36,cy+0.36,0.12), dot(cx+0.36,cy+0.36,0.12)];
+  }
+  const HEAD_X=4.75, STAFF_END=6.1;
+  function staffArt(g){
+    const clef=CLEF_ART[g.clef], y=4-g.p/2, ops=[];
+    for(let i=0;i<5;i++) ops.push({d:`M0 ${i}H${STAFF_END}`, stroke:'line', w:0.09});
+    const ledger = yy => ops.push({d:`M${f(HEAD_X-0.98)} ${f(yy)}H${f(HEAD_X+0.98)}`, stroke:'line', w:0.11});
+    for(let p=-2; p>=g.p; p-=2) ledger(4-p/2);
+    for(let p=10; p<=g.p; p+=2) ledger(4-p/2);
+    ops.push(...clef.ops);
+    // a whole note: an oval with a slanted hole
+    ops.push({d:ellD(HEAD_X,y,0.66,0.47,0)+ellD(HEAD_X,y,0.24,0.38,-0.95), fill:'ink', eo:true});
+    if(g.a) ops.push(...accidentalOps(g.a, HEAD_X-(g.a===-2 ? 1.65 : 1.45), y));
+    const accUp = g.a<0 ? 1.7 : g.a ? 1.2 : 0.5, accDown = g.a ? 1.2 : 0.5;
+    // framed on the staff with room for the treble clef's curls; notes far off the staff widen it
+    return {ops, x0:-0.1, x1:STAFF_END+0.1,
+      y0:Math.min(-1.5, y-accUp), y1:Math.max(5.45, y+accDown)};
+  }
+  // The keys of a keyboard glyph from its first white key (st, a letter) across n white keys.
+  function pianoKeys(g){
+    const keys=[];
+    for(let i=0;i<g.n;i++){
+      const l=(g.st+i)%7;
+      keys.push({pc:NAT[l], white:true, x:i});
+      if(i<g.n-1 && l!==2 && l!==6) keys.push({pc:(NAT[l]+1)%12, white:false, x:i+1});
+    }
+    return keys;
+  }
+  function pianoArt(g){
+    const keys=pianoKeys(g), ops=[], H=4.2, BH=2.6;
+    keys.forEach((k,i)=>{ if(k.white) ops.push({d:`M${k.x} 0H${k.x+1}V${H}H${k.x}Z`, fill:i===g.hi?'ink':'empty', stroke:'line', w:0.1}); });
+    keys.forEach((k,i)=>{ if(!k.white) ops.push({d:`M${f(k.x-0.31)} 0H${f(k.x+0.31)}V${BH}H${f(k.x-0.31)}Z`, fill:i===g.hi?'ink':'dark', stroke:'line', w:0.1}); });
+    return {ops, x0:-0.1, x1:g.n+0.1, y0:-0.1, y1:H+0.1};
+  }
+  const art = g => g.k==='piano' ? pianoArt(g) : staffArt(g);
+  const MAX_ASPECT=2.2;
+  const aspectOf = a => Math.min(MAX_ASPECT, (a.x1-a.x0)/(a.y1-a.y0));
+  function paint(ctx, g, x, y, r, col){
+    const a=art(g), bw=a.x1-a.x0, bh=a.y1-a.y0;
+    const sc=Math.min(2*r/bh, 2*r*MAX_ASPECT/bw);
+    const colour={ink:col.fill, line:col.line, empty:col.empty, dark:'#0a0d12'};
+    ctx.save();
+    ctx.translate(x,y); ctx.scale(sc,sc); ctx.translate(-(a.x0+a.x1)/2, -(a.y0+a.y1)/2);
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    for(const op of a.ops){
+      const p=new Path2D(op.d);
+      if(op.fill){ ctx.fillStyle=colour[op.fill]; ctx.fill(p, op.eo ? 'evenodd' : 'nonzero'); }
+      if(op.stroke){ ctx.strokeStyle=colour[op.stroke]; ctx.lineWidth=Math.max(op.w, 0.9/sc); ctx.stroke(p); }
+    }
+    ctx.restore();
+  }
+  function svgOf(g){
+    const a=art(g), bw=a.x1-a.x0, bh=a.y1-a.y0, h = g.k==='piano' ? 1.1 : 1.6;
+    const colour={ink:'#5be6d9', line:'rgba(91,230,217,0.8)', empty:'rgba(91,230,217,0.12)', dark:'#0a0d12'};
+    const body=a.ops.map(op=>`<path d="${op.d}" fill="${op.fill ? colour[op.fill] : 'none'}"`+
+      (op.eo ? ' fill-rule="evenodd"' : '')+
+      (op.stroke ? ` stroke="${colour[op.stroke]}" stroke-width="${op.w}" stroke-linecap="round" stroke-linejoin="round"` : '')+'/>').join('');
+    return `<svg viewBox="${f(a.x0)} ${f(a.y0)} ${f(bw)} ${f(bh)}" style="display:block;margin:0 auto;height:${h}em;width:${f(h*bw/bh)}em;`+
+      `filter:drop-shadow(0 0 6px rgba(91,230,217,0.45))">${body}</svg>`;
+  }
+
+  // ---------- Rocks ----------
+  function staffGlyph(clef, sp, spots, near){
+    const lo=spots[0], hi=spots[1], out=[];
+    for(let p=lo;p<=hi;p++) if(mod(CLEFS[clef].bottom+p, 7)===sp.l) out.push(p);
+    const p = near===undefined ? choice(out) : out.reduce((b,q)=>Math.abs(q-near)<Math.abs(b-near) ? q : b);
+    return {k:'staff', clef, p, l:sp.l, a:sp.a};
+  }
+  const staffText = g => letterText(g)+Math.floor((CLEFS[g.clef].bottom+g.p)/7)+' '+g.clef;
+  const pianoText = g => 'key '+g.st+'/'+g.n+'/'+g.hi;
+  function itemFor(pc, band){
+    const rep=pick(repsFor(band)).rep;
+    if(rep==='piano'){
+      const g={k:'piano', st: band.i>=2 ? Math.floor(Math.random()*7) : 0, n: band.i>=2 ? 9 : 7};
+      g.hi = choice(pianoKeys(g).map((k,i)=>k.pc===pc ? i : -1).filter(i=>i>=0));
+      return {rep, text:pianoText(g), glyph:g};
+    }
+    const sp=pick(spellings(pc, band)).sp;
+    if(rep==='letter') return {rep, text:letterText(sp)};
+    if(rep==='solfege') return {rep, text:solText(sp)};
+    const g=staffGlyph(rep, sp, spotsFor(band));
+    return {rep, text:staffText(g), glyph:g};
+  }
+  // How an item spells its pitch. A keyboard key has no spelling of its own: a black key takes
+  // the flat if `flats`, else the sharp.
+  function spellingOf(item, flats){
+    const g=item.glyph;
+    if(g && g.k==='staff') return {l:g.l, a:g.a};
+    if(g && g.k==='piano'){
+      const pc=pianoKeys(g)[g.hi].pc, l=NAT.indexOf(pc);
+      return l>=0 ? {l, a:0} : flats ? {l:NAT.indexOf((pc+1)%12), a:-1} : {l:NAT.indexOf(pc-1), a:1};
+    }
+    const t=item.text||'';
+    let l = item.rep==='solfege' ? SOL.findIndex(s=>t.startsWith(s)) : LET.indexOf(t[0]);
+    if(l<0) l=0;
+    return {l, a:(t.split('♯').length-1)-(t.split('♭').length-1)};
+  }
+
+  return {
+    id: 'notes',
+    title: 'NOTE SORT',
+    intro: "Sort the notes by their pitch.",
+    scanLabel: 'TONAL SIGNATURE',
+    pickValue(sector){ return valueOf(choice(universe(CARGO_BAND(sector)))); },
+    planSector,
+    makeItem(value, sector, labels){
+      // skip rocks that just repeat a barrel's label when there's another way to show the pitch
+      const band=CARGO_BAND(sector);
+      let it;
+      for(let t=0;t<8;t++){ it=itemFor(value.pc, band); if(!(labels||[]).includes(it.text)) break; }
+      return it;
+    },
+    repLabel(item){
+      return item.glyph ? (item.glyph.k==='piano' ? 'NOTATION: KEYBOARD' : 'NOTATION: '+CLEFS[item.glyph.clef].label)
+                        : item.rep==='solfege' ? 'NOTATION: SOLFEGE' : 'NOTATION: LETTER';
+    },
+    readoutHTML(item){ return item.glyph ? svgOf(item.glyph) : null; },
+    // A rock dropped in the wrong barrel: its own pitch, written the way that barrel's label is
+    // (letter, syllable, the same clef near the barrel's note, or the same stretch of keyboard).
+    correction(rock, shown, sector){
+      const pc=rock.value.pc, g=shown.glyph;
+      if(g && g.k==='piano'){
+        const fix=Object.assign({}, g, {hi:pianoKeys(g).findIndex(k=>k.pc===pc)});
+        return {text:pianoText(fix), glyph:fix};
+      }
+      const sp=spellingOf(rock, spellingOf(shown, false).a<0);
+      if(g && g.k==='staff'){
+        const fix=staffGlyph(g.clef, sp, [-7,15], g.p);
+        return {text:staffText(fix), glyph:fix};
+      }
+      return {text: shown.rep==='solfege' ? solText(sp) : letterText(sp)};
+    },
+    drawGlyph(ctx, glyph, x, y, r, col){ paint(ctx, glyph, x, y, r, col); return true; },
+    glyphAspect(glyph){ return aspectOf(art(glyph)); },
+  };
+})();
+</script>
+<script>
+// Load the shared engine, passing on this page's ?v= cache-buster (see the engine's live update).
+(function(){ var v=/[?&]v=(\d+)/.exec(location.search);
+  document.write('<script data-cargo-engine src="../engine/engine.js'+(v?'?v='+v[1]:'')+'"><\/script>'); })();
+</script>
+</body>
+</html>
