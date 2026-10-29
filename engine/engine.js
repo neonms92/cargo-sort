@@ -18,6 +18,9 @@
 //   readoutHTML(item)     optional; custom scanner markup (default: item.text)
 //   drawGlyph(ctx, glyph, x, y, r, colors)  optional; draws item.glyph on a barrel hologram, returns true
 //   translate(text)       optional; English for a rock's or barrel's text, shown when a drop is explained
+//   correction(rock, shown, sector)  optional; after a mismatch, the rock's value written the way the barrel's label
+//                         (shown: its first item) writes its own, as {text, glyph?, en?}; null falls back to a
+//                         barrel that matched
 // A barrel is labelled with its first rock's item (text/glyph); the value it matches stays hidden.
 (function(){
 const ENGINE_CSS = `
@@ -279,9 +282,9 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #dropDialog h2{font-family:var(--font-display); font-weight:900; font-size:18px; letter-spacing:3px; margin:0 0 16px; color:var(--text-hi);}
 #dropDialog h2.miss{color:var(--amber); text-shadow:0 0 16px rgba(255,182,72,0.35);}
 #dropDialog h2.ok{color:var(--success); text-shadow:0 0 16px rgba(124,255,178,0.35);}
-#dropDiagram{display:flex; align-items:center; justify-content:center; width:100%; margin-bottom:18px;}
+#dropDiagram{display:flex; align-items:flex-start; justify-content:center; width:100%; margin-bottom:18px;}
 #dropDiagram .arrows{flex:0 0 58px; align-self:stretch; display:block;}
-#dropDiagram .dests{display:flex; flex-direction:column; justify-content:space-around; gap:18px; min-width:0;}
+#dropDiagram .dests{display:flex; flex-direction:column; gap:18px; min-width:0;}
 .dd{display:flex; flex-direction:column; align-items:center; gap:4px; min-width:0;}
 .dd .tag{font-family:var(--font-display); font-size:8px; letter-spacing:2px; color:var(--text-dim);}
 .dd .en{font-family:var(--font-body); font-size:13px; font-weight:600; color:var(--text-mid); max-width:130px;}
@@ -3545,22 +3548,30 @@ function pressRedButton(){
 }
 
 // Every rock that goes into a barrel (not one bouncing off a sealed lid) is remembered for the display
-// under the score: the rock, the label of the barrel it went in, and after a mismatch the label of a
-// barrel it did belong in (null: none was out, so an empty barrel; {out:true}: it fits no
+// under the score: the rock, the label of the barrel it went in, and after a mismatch the right answer.
+// That's the protocol's correction (the rock's value said the way the barrel's label says its own:
+// 60% into a 4/5 barrel should have been 3/5) or, without one, the label of a barrel it did belong in
+// (fromBarrel; right is null when none was out, meaning an empty barrel; {out:true}: it fits no
 // barrel, say a leftover whose barrel was sealed, and should have gone back out of the iris). Called before the barrel changes.
 function noteDrop(idx, r){
   const barrel=state.barrels[idx];
   const label=b=>({text:b.text, glyph:b.glyph||null});
   const ok = !barrel.value || sameValue(barrel.value, r.value);
-  let right=null;
+  let right=null, fromBarrel=false;
   if(!ok){
-    const fits = state.barrels.filter((b,j)=> j!==idx && b.value && sameValue(b.value, r.value));
-    const best = fits.find(b=>b.status==='ready' && !b.sealed) || fits[0];
-    if(best) right=label(best);
-    else if(!state.barrels.some((b,j)=> j!==idx && !b.sealed && !b.value)) right={out:true};
+    const shown = Object.assign({}, (barrel.items && barrel.items[0]) || {}, {value:barrel.value, text:barrel.text, glyph:barrel.glyph||null});
+    const fix = MODE.correction && MODE.correction(rockItem(r), shown, state.sector);
+    if(fix) right={text:fix.text, glyph:fix.glyph||null, en:fix.en||''};
+    else {
+      fromBarrel=true;
+      const fits = state.barrels.filter((b,j)=> j!==idx && b.value && sameValue(b.value, r.value));
+      const best = fits.find(b=>b.status==='ready' && !b.sealed) || fits[0];
+      if(best) right=label(best);
+      else if(!state.barrels.some((b,j)=> j!==idx && !b.sealed && !b.value)) right={out:true};
+    }
   }
   state.lastDrop = {ok, t:state.t, rock:{text:r.text, glyph:r.glyph||null},
-    chosen: barrel.value ? label(barrel) : {text:r.text, glyph:r.glyph||null}, right};
+    chosen: barrel.value ? label(barrel) : {text:r.text, glyph:r.glyph||null}, right, fromBarrel};
 }
 // What a barrel remembers about each rock it takes, so an ejected rock comes back out as itself.
 function rockItem(r){ return {value:r.value, rep:r.rep, text:r.text, glyph:r.glyph||null}; }
@@ -5390,7 +5401,7 @@ function dropBox(cls, item, tag){
   if(!drawn) box.textContent = out ? 'THROW IT BACK OUT' : item ? item.text : 'EMPTY BARREL';
   if(!item || out) box.classList.add('empty');
   wrap.appendChild(box);
-  const en = item && MODE.translate ? MODE.translate(item.text) : '';
+  const en = item && (item.en || (MODE.translate ? MODE.translate(item.text) : ''));
   if(en){ const e=document.createElement('div'); e.className='en'; e.textContent=en; wrap.appendChild(e); }
   if(tag){ const t=document.createElement('div'); t.className='tag'; t.textContent=tag; wrap.insertBefore(t, wrap.firstChild); }
   return wrap;
@@ -5402,43 +5413,44 @@ function openDropDialog(){
   title.className = d.ok ? 'ok' : 'miss';
   const dia=document.getElementById('dropDiagram');
   dia.innerHTML='';
-  dia.appendChild(dropBox('ddRock', d.rock));
+  const rockWrap=dropBox('ddRock', d.rock);
+  dia.appendChild(rockWrap);
   const NS='http://www.w3.org/2000/svg';
   const svg=document.createElementNS(NS,'svg');
   svg.setAttribute('class','arrows'); svg.setAttribute('preserveAspectRatio','none');
   dia.appendChild(svg);
+  // the right answer straight across from the rock; after a mismatch, the barrel it went in branches off below
   const dests=document.createElement('div'); dests.className='dests';
-  const chosen=dropBox('ddHolo', d.chosen, d.ok ? '' : 'YOU CHOSE');
-  if(!d.ok) chosen.querySelector('.ddHolo').classList.add('wrong');
-  dests.appendChild(chosen);
-  if(!d.ok) dests.appendChild(dropBox('ddHolo', d.right, d.right && d.right.out ? 'NO BARREL FITS' : 'BELONGS WITH'));
+  if(d.ok) dests.appendChild(dropBox('ddHolo', d.chosen));
+  else {
+    dests.appendChild(dropBox('ddHolo', d.right, !d.fromBarrel ? 'CORRECT ANSWER' : d.right && d.right.out ? 'NO BARREL FITS' : 'BELONGS WITH'));
+    const chosen=dropBox('ddHolo', d.chosen, 'YOU CHOSE');
+    chosen.querySelector('.ddHolo').classList.add('wrong');
+    dests.appendChild(chosen);
+  }
   dia.appendChild(dests);
   document.getElementById('dropDialog').classList.remove('hidden');
-  // arrows once the boxes have their sizes: from the rock's right edge to each label's left edge
-  const r=svg.getBoundingClientRect(), rock=dia.firstChild.querySelector('.ddRock').getBoundingClientRect();
-  const W2=r.width, y0=rock.top+rock.height/2-r.top;
+  // line the rock up with the right answer, then draw the arrows from the rock's right edge
+  const mid=el=>{ const q=el.getBoundingClientRect(); return q.top+q.height/2; };
+  const holos=[...dests.querySelectorAll('.ddHolo')], rockBox=rockWrap.querySelector('.ddRock');
+  rockWrap.style.marginTop = Math.max(0, mid(holos[0]) - mid(rockBox))+'px';
+  const r=svg.getBoundingClientRect();
+  const W2=r.width, y0=mid(rockBox)-r.top;
   svg.setAttribute('viewBox', '0 0 '+W2+' '+r.height);
-  const ys=[...dests.querySelectorAll('.ddHolo')].map(el=>{ const q=el.getBoundingClientRect(); return q.top+q.height/2-r.top; });
+  const ys=holos.map(el=>mid(el)-r.top);
   const arrow=(y1, col)=>{
     const p=document.createElementNS(NS,'path');
-    const x0=4, x1=W2-6, mx=W2*0.35;
-    p.setAttribute('d', 'M'+x0+' '+y0+' L'+mx+' '+y0+' L'+(x1-8)+' '+y1+' L'+x1+' '+y1);
+    const x0=4, x1=W2-6, mx=W2*0.3;
+    p.setAttribute('d', Math.abs(y1-y0)<1 ? 'M'+x0+' '+y0+' L'+x1+' '+y0
+      : 'M'+x0+' '+y0+' L'+mx+' '+y0+' L'+(x1-10)+' '+y1+' L'+x1+' '+y1);
     p.setAttribute('fill','none'); p.setAttribute('stroke',col); p.setAttribute('stroke-width','2.5');
     p.setAttribute('stroke-linejoin','round'); svg.appendChild(p);
     const h=document.createElementNS(NS,'path');
     h.setAttribute('d', 'M'+(x1-7)+' '+(y1-5)+' L'+(x1+1)+' '+y1+' L'+(x1-7)+' '+(y1+5)+'Z');
     h.setAttribute('fill',col); svg.appendChild(h);
-    return {x:(mx+x1-8)/2, y:(y0+y1)/2};
   };
-  if(d.ok) arrow(ys[0], '#7cffb2');
-  else {
-    const m=arrow(ys[0], '#ff5252');
-    const x=document.createElementNS(NS,'path'), k=6;
-    x.setAttribute('d', `M${m.x-k} ${m.y-k} L${m.x+k} ${m.y+k} M${m.x+k} ${m.y-k} L${m.x-k} ${m.y+k}`);
-    x.setAttribute('stroke','#ff5252'); x.setAttribute('stroke-width','3'); x.setAttribute('stroke-linecap','round');
-    svg.appendChild(x);
-    arrow(ys[1], '#7cffb2');
-  }
+  if(!d.ok) arrow(ys[1], '#ff5252');
+  arrow(y0, '#7cffb2');
   AudioEngine.uiBlip(520);
 }
 function closeDropDialog(quiet){

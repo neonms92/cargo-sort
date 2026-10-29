@@ -261,6 +261,15 @@ window.CARGO_MODE = (function(){
     // looked up by text, so a rock restored from a save still gets its description
     repLabel(item){ return DESC[item.text] || ''; },
     translate(text){ return TRANS[text] || ''; },
+    // vivir dropped in with vamos: the same tense and person of the rock's verb, vivimos
+    correction(rock, shown){
+      const read = raw[shown.value.key] && raw[shown.value.key].find(([t])=>t===shown.text);
+      const forms = raw[rock.value.key];
+      if(!read || !forms) return null;
+      const hit = forms.find(([, tense, p])=> tense===read[1] && p===read[2]);
+      // English from the rock's verb, since the form may be one shared with another verb (fui)
+      return hit ? {text:hit[0], en:english(rock.value.key, read[1], read[2]===null ? [] : [read[2]])} : null;
+    },
   };
 })();
 </script>

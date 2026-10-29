@@ -164,6 +164,12 @@ window.CARGO_MODE = (function(){
     same(a,b){ return Math.abs(a.decimal-b.decimal) < 0.0005; },
     repLabel(item){ return 'REPRESENTATION: ' + (item.glyph ? 'PICTOGRAPH' : item.rep.toUpperCase()); },
     readoutHTML(item){ return item.glyph ? pieSVG(item.glyph.n, item.glyph.d) : null; },
+    // 60% dropped in a 4/5 barrel should have gone in as 3/5: same value, the barrel's way of writing it
+    correction(rock, shown, sector){
+      const v=rock.value, rep = shown.glyph ? 'pie' : /%/.test(shown.text) ? 'percent' : /\//.test(shown.text) ? 'fraction' : 'decimal';
+      if(rep==='pie' && pieDenoms(sector).includes(v.d)) return {text:v.n+'/'+v.d, glyph:{n:v.n, d:v.d}};
+      return {text:valueText(v, rep==='pie' ? 'fraction' : rep, false, sector)};
+    },
     drawGlyph(ctx, glyph, x, y, r, col){ drawPie(ctx, x, y, r, glyph.n, glyph.d, col.fill, col.empty, col.line); return true; },
   };
 })();

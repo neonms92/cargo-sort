@@ -151,6 +151,8 @@ window.CARGO_MODE = (function(){
       return {rep:'word', text};
     },
     repLabel(){ return 'SORT BY: WORD TYPE'; },
+    // "gently" in with "sleepy": the answer is the type itself, Adverb
+    correction(rock){ return {text: rock.value.key[0].toUpperCase() + rock.value.key.slice(1)}; },
   };
 })();
 </script>
