@@ -2399,13 +2399,16 @@ function makeSprite(x, y, w, h, fn){
   return {cv, w, h, cx:x+w/2, cy:y+h/2};
 }
 function failureVP(){ return {x:W*0.5, y:H*0.42}; }
+// Every piece gets a brief outward kick from the blast, then drifts in towards the middle of the
+// screen (`pull`: share of its distance from the vanishing point closed per second) as it recedes.
 function addPiece(f, kind, at, extra){
   const vp=failureVP(), X=at.x-vp.x, Y=at.y-vp.y, d=Math.hypot(X,Y)||1;
   const k=clamp(Math.min(W,H)/700, 0.55, 1.2);
-  const sp=rand(70,230)*k, burst=rand(60,200)*k;
+  const burst=rand(40,120)*k;
   f.pieces.push(Object.assign({kind, X, Y, Z:0, rot:0, X0:X, Y0:Y,
-    vX:X/d*sp + rand(-25,25)*k, vY:Y/d*sp + rand(-25,25)*k, bX:X/d*burst, bY:Y/d*burst,
-    vZ:rand(0.1,0.35), spin:rand(-0.6,0.6), alpha:1}, extra));
+    vX:rand(-15,15)*k, vY:rand(-15,15)*k, bX:X/d*burst, bY:Y/d*burst, pull:rand(0.02,0.06),
+    vZ:rand(0.15,0.45), spin:rand(-0.6,0.6), alpha:1}, extra));
+  return f.pieces[f.pieces.length-1];
 }
 function splitBay(){
   const f=state.failure;
@@ -2431,13 +2434,27 @@ function splitBay(){
     addPiece(f, 'img', {x:s.cx, y:s.cy}, {s, layer:0});
   }
   // everything mounted in the bay
-  const add=(x,y,w,h,fn,spin)=>{ const s=makeSprite(x,y,w,h,fn); addPiece(f,'img',{x:s.cx,y:s.cy},{s, layer:1, spin:spin!==undefined?spin:rand(-1,1)*0.8}); };
-  state.aliens.forEach(a=>{ if(a.state==='chute' || a.state==='launching') a.state='adrift'; });   // the airlock floats off empty
+  const add=(x,y,w,h,fn,spin)=>{ const s=makeSprite(x,y,w,h,fn); return addPiece(f,'img',{x:s.cx,y:s.cy},{s, layer:1, spin:spin!==undefined?spin:rand(-1,1)*0.8}); };
+  // Whoever is in the airlock stays shut in it and floats off with it (see updateAdriftAirlock).
+  // They're taken out of the box's own drawing so the airlock piece is drawn empty.
+  const boxed = state.aliens.filter(a=> a.state==='chute' || a.state==='launching');
+  boxed.forEach(a=>{ a.state='boxed'; });
   const {cx,cy,r}=layout.iris, RR=r*1.17+4;
   add(cx-RR, cy-RR, RR*2, RR*2, ()=>{ drawIrisBlades(cx,cy,r); drawIrisRing(cx,cy,r); }, rand(-0.25,0.25));
   layout.emitters.forEach(e=>add(e.x-16, e.y-16, 32, 32, ()=>{ ctx.save(); ctx.translate(e.x,e.y); ctx.fillStyle='#242b36'; ctx.beginPath(); ctx.arc(0,0,13,0,TAU); ctx.fill(); ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke(); ctx.fillStyle='#3a4351'; ctx.beginPath(); ctx.arc(0,0,5.5,0,TAU); ctx.fill(); ctx.restore(); }));
   const c=layout.chute, cb=layout.chuteBtn, F=Math.max(5, c.w*0.07);
-  add(c.x-c.w/2-F-4, cb.y-cb.h/2-4, c.w+F*2+8, (c.y+c.h/2+F+4)-(cb.y-cb.h/2-4), drawChute);
+  const airlock = add(c.x-c.w/2-F-4, cb.y-cb.h/2-4, c.w+F*2+8, (c.y+c.h/2+F+4)-(cb.y-cb.h/2-4), drawChute);
+  if(boxed.length){
+    // drawn over the rest of the wreckage, and slower to recede, so its passengers stay in view
+    airlock.layer=3; airlock.vZ=rand(0.1,0.18);
+    f.airlock = airlock.box = {ox:c.x-airlock.s.cx, oy:c.y-airlock.s.cy, w:c.w, h:c.h, talkT:rand(1.5,3),
+      aliens: boxed.map(a=>{
+        const r=chuteRadius(a);
+        a.opacity=1; a.bubbleAt=null;
+        return {a, x:clamp(a.x-c.x, -c.w/2+r, c.w/2-r), y:clamp(a.y-c.y, -c.h/2+r, c.h/2-r),
+                vx:rand(-60,60), vy:rand(-80,-20), spin:rand(-2,2)};   // the blast throws them off the floor
+      })};
+  }
   const sb=layout.scoreboard, sbF=Math.max(5, sb.w*0.07);
   add(sb.x-sb.w/2-sbF-3, sb.y-sb.h/2-sbF-3, sb.w+sbF*2+6, sb.h+sbF*2+6, drawScoreboard);
   const b=layout.redButton;
@@ -2467,7 +2484,7 @@ function splitBay(){
   state.rocks.forEach(rk=>{ if(rk.state!=='gone') addPiece(f, 'rock', rk, {rock:rk, scale0:rk.scale, layer:2, spin:rand(-1.5,1.5)}); });
   // every alien, live; the ones off-screen start just past the edge they're nearest and drift in
   state.aliens.forEach(a=>{
-    if(a.state==='gone') return;
+    if(a.state==='gone' || a.state==='boxed') return;
     let at={x:a.x, y:a.y}, scale0=a.scale;
     if(a.walkPhase==='hiding' && a.hidingInBarrel!=null){ const an=layout.barrels4[a.hidingInBarrel]; at={x:an.x, y:an.y-layout.barrelH*0.6}; }
     else if(a.state==='jammed') at={x:h.x, y:h.y};
@@ -2485,7 +2502,7 @@ function splitBay(){
   // up to two of them, preferably ones that were in the bay, have something to say about it
   const aliens=f.pieces.filter(p=>p.kind==='alien');
   const pool=aliens.filter(p=>p.on).sort(()=>Math.random()-0.5).concat(aliens.filter(p=>!p.on).sort(()=>Math.random()-0.5));
-  f.talkers = pool.slice(0,2).map((p,i)=>({p, at: i ? 3.1 : 1.4, said:false,
+  f.talkers = pool.slice(0,2).map((p,i)=>({p, at: i ? 4.4 : 1.4, said:false,
     text: i ? choice(ALIEN_REASSURE_MESSAGES) : "I've been through worse."}));
   state.particles = state.particles.filter(p=>p.type!=='plate');
   bgCanvas.style.visibility='hidden';
@@ -2539,17 +2556,84 @@ function updateFailure(dt){
   }
   const decay=Math.exp(-dt*4);
   for(const p of f.pieces){
-    p.X += (p.vX+p.bX)*dt; p.Y += (p.vY+p.bY)*dt;
+    p.X += (p.vX+p.bX)*dt - p.X*p.pull*dt; p.Y += (p.vY+p.bY)*dt - p.Y*p.pull*dt;
     p.bX*=decay; p.bY*=decay;
     p.Z += p.vZ*dt; p.rot += p.spin*dt;
   }
+  updateAdriftAirlock(dt);
   for(const tk of f.talkers){
-    if(!tk.said && f.t>=tk.at){ tk.said=true; tk.p.alien.message=tk.text; tk.p.alien.bubbleT=3.4; }
+    if(!tk.said && f.t>=tk.at){ tk.said=true; tk.p.alien.message=tk.text; tk.p.alien.bubbleT=2.8; }
     const a=tk.p.alien;
     if(a.bubbleT>0) a.bubbleT=Math.max(0, a.bubbleT-dt);
   }
   if(state.phase==='breach' && f.t>=FAILURE_END_SCREEN_AT) gameOver();
   return true;
+}
+// ---- The airlock, adrift ----
+// Its occupants float around inside with no gravity, bumping off the glass and each other, getting
+// the odd shove from a neighbour, and (one at a time) complaining about it.
+const ALIEN_AIRLOCK_ADRIFT_MESSAGES=[
+  "Hello? Still in here!",
+  "Can someone open this thing?",
+  "Is this the lifeboat now?",
+  "I was promised a window seat.",
+  "Stop kicking me!",
+  "Whose elbow is that?",
+  "This is the worst sauna ever.",
+];
+const AIRLOCK_ADRIFT_MAX_SPEED = 90;   // px/s, in the box's own (unscaled) coordinates
+function updateAdriftAirlock(dt){
+  const box=state.failure.airlock;
+  if(!box) return;
+  const L=box.aliens, hw=box.w/2, hh=box.h/2;
+  for(const o of L){
+    if(Math.random() < dt*0.6){ o.vx+=rand(-50,50); o.vy+=rand(-50,50); o.spin+=rand(-1,1); }   // jostled
+    const sp=Math.hypot(o.vx,o.vy);
+    if(sp>AIRLOCK_ADRIFT_MAX_SPEED){ o.vx*=AIRLOCK_ADRIFT_MAX_SPEED/sp; o.vy*=AIRLOCK_ADRIFT_MAX_SPEED/sp; }
+    o.x+=o.vx*dt; o.y+=o.vy*dt;
+    o.a.rot=((o.a.rot||0) + o.spin*dt) % TAU;
+    const r=chuteRadius(o.a);
+    if(o.x<-hw+r){ o.x=-hw+r; o.vx=Math.abs(o.vx)*0.8; }
+    if(o.x> hw-r){ o.x= hw-r; o.vx=-Math.abs(o.vx)*0.8; }
+    if(o.y<-hh+r){ o.y=-hh+r; o.vy=Math.abs(o.vy)*0.8; }
+    if(o.y> hh-r){ o.y= hh-r; o.vy=-Math.abs(o.vy)*0.8; }
+  }
+  // bumping into each other: push apart and swap the speed along the line between them
+  for(let i=0;i<L.length;i++) for(let j=i+1;j<L.length;j++){
+    const a=L[i], b=L[j], min=chuteRadius(a.a)+chuteRadius(b.a);
+    let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
+    if(d>=min) continue;
+    if(d<0.001){ dx=rand(-1,1); dy=rand(-1,1); d=Math.hypot(dx,dy)||1; }
+    const nx=dx/d, ny=dy/d, push=(min-d)/2;
+    a.x-=nx*push; a.y-=ny*push; b.x+=nx*push; b.y+=ny*push;
+    const va=a.vx*nx+a.vy*ny, vb=b.vx*nx+b.vy*ny;
+    if(va-vb>0){ a.vx+=(vb-va)*nx; a.vy+=(vb-va)*ny; b.vx+=(va-vb)*nx; b.vy+=(va-vb)*ny; }
+  }
+  for(const o of L) if(o.a.bubbleT>0) o.a.bubbleT=Math.max(0, o.a.bubbleT-dt);
+  box.talkT-=dt;
+  if(box.talkT<=0 && L.length && !L.some(o=>o.a.bubbleT>0)){
+    const o=choice(L);
+    o.a.message = choice(L.length>=CHUTE_CROWD && Math.random()<0.4 ? ALIEN_CHUTE_CROWD_MESSAGES : ALIEN_AIRLOCK_ADRIFT_MESSAGES);
+    o.a.bubbleT = 3;
+    box.talkT = rand(3.5,6);
+  }
+}
+// Called inside the airlock piece's transform (origin at the piece's center, scaled by `s`).
+// Also notes where each occupant is on screen, for its speech bubble.
+function drawBoxedAliens(box, px, py, s, rot){
+  ctx.save();
+  ctx.beginPath(); ctx.rect(box.ox-box.w/2, box.oy-box.h/2, box.w, box.h); ctx.clip();
+  const cos=Math.cos(rot), sin=Math.sin(rot);
+  for(const o of box.aliens){
+    const a=o.a, lx=box.ox+o.x, ly=box.oy+o.y;
+    a.x=lx; a.y=ly; a.scale=ALIEN_TRACK2_SCALE; a.opacity=1;
+    drawAlienList([a]);
+    o.sx=px+(lx*cos-ly*sin)*s; o.sy=py+(lx*sin+ly*cos)*s; o.ss=s;
+  }
+  // the glass, in front of them again
+  ctx.fillStyle='rgba(150,215,255,0.08)';
+  ctx.fillRect(box.ox-box.w/2, box.oy-box.h/2, box.w, box.h);
+  ctx.restore();
 }
 // Glowing seams spreading across the bay just before it splits.
 function drawFailureSeams(){
@@ -2576,6 +2660,7 @@ function drawFailure(){
       ctx.save();
       ctx.translate(x,y); ctx.rotate(p.rot); ctx.scale(s,s);
       ctx.drawImage(p.s.cv, -p.s.w/2, -p.s.h/2, p.s.w, p.s.h);
+      if(p.box) drawBoxedAliens(p.box, x, y, s, p.rot);
       ctx.restore();
     } else {
       const o = p.kind==='rock' ? p.rock : p.alien;
@@ -2584,6 +2669,14 @@ function drawFailure(){
     }
   }
   drawParticles();
+  if(f.airlock) for(const o of f.airlock.aliens){
+    const a=o.a;
+    if(a.bubbleT<=0) continue;
+    ctx.save();
+    ctx.globalAlpha = a.bubbleT>0.6 ? 1 : a.bubbleT/0.6;
+    drawSpeechBubble(o.sx, o.sy - a.size*ALIEN_TRACK2_SCALE*o.ss - 10, a.message);
+    ctx.restore();
+  }
   for(const tk of f.talkers){
     const a=tk.p.alien;
     if(a.bubbleT<=0 || tk.p.alpha<=0) continue;
