@@ -51,6 +51,35 @@ window.CARGO_MODE = (function(){
     cmd:  ()=> 'Verb!',
   };
   const example = (tense, ps)=> EXAMPLE[tense](ps.map(p=>WHO[p]).join(' or '), ps[0]);
+  // English for the explanation after a drop: each verb's English forms [base, -s, past, participle, -ing].
+  // A verb made with "to be" gives just what follows it (ser/estar: nothing; poder: "able to", though
+  // in the tenses where English has them it's "can" and "could").
+  const ENGLISH = {
+    hablar:['speak','speaks','spoke','spoken','speaking'], comer:['eat','eats','ate','eaten','eating'],
+    vivir:['live','lives','lived','lived','living'],       tener:['have','has','had','had','having'],
+    ser:{be:''}, estar:{be:''}, poder:{be:' able to'},
+    ir:['go','goes','went','gone','going'],                hacer:['do','does','did','done','doing'],
+    querer:['want','wants','wanted','wanted','wanting'],   decir:['say','says','said','said','saying'],
+    venir:['come','comes','came','come','coming'],         saber:['know','knows','knew','known','knowing'],
+    poner:['put','puts','put','put','putting'],            salir:['leave','leaves','left','left','leaving'],
+    dormir:['sleep','sleeps','slept','slept','sleeping'],  pedir:['ask for','asks for','asked for','asked for','asking for'],
+    ver:['see','sees','saw','seen','seeing'],
+  };
+  const AM=['am','are','is','are','are'], WAS=['was','were','was','were','were'];
+  function english(inf, tense, ps){
+    const e=ENGLISH[inf], who=ps.map(p=>WHO[p]).join(' or '), p=ps[0];
+    if(inf==='poder' && /^(pres|pret|imp|cond|subj)$/.test(tense))
+      return (tense==='subj' ? 'that ' : '') + who + (tense==='pres'||tense==='subj' ? ' can' : ' could');
+    if(e.be!==undefined){
+      const x=e.be;
+      return {inf:'to be'+x, ger:'being'+x, part:'been'+x, pres:who+' '+AM[p]+x, pret:who+' '+WAS[p]+x, imp:who+' '+WAS[p]+x,
+              fut:who+' will be'+x, cond:who+' would be'+x, subj:'that '+who+' be'+x, cmd:'Be'+x+'!'}[tense];
+    }
+    const [base, s, past, pp, ing]=e;
+    return {inf:'to '+base, ger:ing, part:pp, pres:who+' '+(p===2?s:base), pret:who+' '+past, imp:who+' '+WAS[p]+' '+ing,
+            fut:who+' will '+base, cond:who+' would '+base, subj:'that '+who+' '+base,
+            cmd:base[0].toUpperCase()+base.slice(1)+'!'}[tense];
+  }
   const ENDINGS = {
     ar: {pres:['o','as','a','amos','an'], pret:['é','aste','ó','amos','aron'], imp:['aba','abas','aba','ábamos','aban'], subj:['e','es','e','emos','en']},
     er: {pres:['o','es','e','emos','en'], pret:['í','iste','ió','imos','ieron'], imp:['ía','ías','ía','íamos','ían'], subj:['a','as','a','amos','an']},
@@ -118,7 +147,7 @@ window.CARGO_MODE = (function(){
     raw[inf] = conjugate(inf, VERBS[inf]);
     raw[inf].forEach(([t])=> (owners[t] = owners[t] || new Set()).add(inf));
   }
-  const FORMS = {}, DESC = {};
+  const FORMS = {}, DESC = {}, TRANS = {};
   for(const inf in raw){
     const byText = new Map();
     raw[inf].forEach(([t, tense, p])=>{
@@ -142,6 +171,7 @@ window.CARGO_MODE = (function(){
       // a form shows up once every tense it can be read as has appeared
       const from = Math.min(...[...byTense.keys()].map(k=>TENSES[k][1]));
       DESC[text] = desc + '\n' + examples;
+      TRANS[text] = [...new Set([...byTense].map(([tense, ps])=> english(inf, tense, ps)))].join(' / ');
       return {text, from};
     });
   }
@@ -168,6 +198,7 @@ window.CARGO_MODE = (function(){
     },
     // looked up by text, so a rock restored from a save still gets its description
     repLabel(item){ return DESC[item.text] || ''; },
+    translate(text){ return TRANS[text] || ''; },
   };
 })();
 </script>

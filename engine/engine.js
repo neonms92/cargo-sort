@@ -15,6 +15,7 @@
 //   repLabel(item)        optional; line beside the readout while a rock is held (\n breaks lines)
 //   readoutHTML(item)     optional; custom scanner markup (default: item.text)
 //   drawGlyph(ctx, glyph, x, y, r, colors)  optional; draws item.glyph on a barrel hologram, returns true
+//   translate(text)       optional; English for a rock's or barrel's text, shown when a drop is explained
 // A barrel is labelled with its first rock's item (text/glyph); the value it matches stays hidden.
 (function(){
 const ENGINE_CSS = `
@@ -266,6 +267,34 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 #scoresList{width:100%; margin-bottom:18px;}
 #scoresDialog .bigBtn{padding:11px 30px; font-size:13px;}
 
+/* The last drop, explained: the rock, an arrow to the barrel it went in, and (after a mismatch) that
+   arrow crossed out and a second one to where it belonged. Opened from the wall display under the score. */
+#dropDialog{position:absolute; inset:0; z-index:35; display:flex; align-items:center; justify-content:center;
+  padding:16px; background:rgba(4,6,10,0.72);}
+#dropDialog.hidden{display:none;}
+#dropDialog .dlg{width:min(460px,100%); max-height:100%; overflow-y:auto; padding:18px 14px 20px; border-radius:6px;
+  display:flex; flex-direction:column; align-items:center; text-align:center; border-color:var(--cyan-dim);}
+#dropDialog h2{font-family:var(--font-display); font-weight:900; font-size:18px; letter-spacing:3px; margin:0 0 16px; color:var(--text-hi);}
+#dropDialog h2.miss{color:var(--amber); text-shadow:0 0 16px rgba(255,182,72,0.35);}
+#dropDialog h2.ok{color:var(--success); text-shadow:0 0 16px rgba(124,255,178,0.35);}
+#dropDiagram{display:flex; align-items:center; justify-content:center; width:100%; margin-bottom:18px;}
+#dropDiagram .arrows{flex:0 0 58px; align-self:stretch; display:block;}
+#dropDiagram .dests{display:flex; flex-direction:column; justify-content:space-around; gap:18px; min-width:0;}
+.dd{display:flex; flex-direction:column; align-items:center; gap:4px; min-width:0;}
+.dd .tag{font-family:var(--font-display); font-size:8px; letter-spacing:2px; color:var(--text-dim);}
+.dd .en{font-family:var(--font-body); font-size:13px; font-weight:600; color:var(--text-mid); max-width:130px;}
+.ddRock{min-width:64px; max-width:120px; padding:10px 12px; border-radius:18px 14px 20px 12px;
+  background:radial-gradient(circle at 35% 30%, #6a5a4a, #3a3028 70%); border:1px solid #7b6a56;
+  font-family:var(--font-display); font-weight:700; font-size:17px; color:#fff1dc; overflow-wrap:anywhere;}
+.ddHolo{position:relative; min-width:84px; max-width:130px; padding:9px 10px; color:#d8fbf7;
+  font-family:var(--font-display); font-weight:700; font-size:16px; overflow-wrap:anywhere;
+  background:repeating-linear-gradient(0deg, rgba(91,230,217,0.07) 0 1px, transparent 1px 3px), rgba(91,230,217,0.09);
+  border:1px solid rgba(91,230,217,0.5); text-shadow:0 0 8px rgb(91,230,217);}
+.ddHolo.empty{color:rgba(91,230,217,0.6); font-size:11px; letter-spacing:2px;}
+.ddHolo.wrong{opacity:0.55; filter:saturate(0.4);}
+.ddRock canvas, .ddHolo canvas{display:block; width:40px; height:40px; margin:0 auto;}
+#dropDialog .bigBtn{padding:11px 30px; font-size:13px;}
+
 
 @media (prefers-reduced-motion: reduce){
   .toast{transition:none;}
@@ -352,6 +381,14 @@ function injectShell(){
       <div id="scoresList"></div>
       <button id="audioToggle" role="switch" aria-checked="true"><span>SOUNDS ENABLED</span><span class="sw"></span></button>
       <button class="bigBtn" id="scoresClose">CLOSE</button>
+    </div>
+  </div>
+
+  <div id="dropDialog" class="hidden">
+    <div class="dlg panel notch">
+      <h2 id="dropTitle"></h2>
+      <div id="dropDiagram"></div>
+      <button class="bigBtn" id="dropClose">CLOSE</button>
     </div>
   </div>
 
@@ -887,9 +924,12 @@ function computeLayout(){
   let sbBottom = L.y - L.h - 14;
   [{l:b1.x-R0*1.1, r:b1.x+R0*1.1, top:b1.y-layout.barrelH-R0*0.45}, {l:h1.x-h1.w/2, r:h1.x+h1.w/2, top:h1.y-h1.h/2}]
     .forEach(o=>{ if(o.r > sbL && o.l < sbR) sbBottom = Math.min(sbBottom, o.top - 8); });
-  const sbF = frameOf(sbW), sbH = Math.max(28, Math.min(sbW*SB_ASPECT, sbBottom - sbTop - sbF*2));
-  const sbY = clamp(boxY, sbTop + sbF + sbH/2, Math.max(sbTop + sbF + sbH/2, sbBottom - sbF - sbH/2));
+  // Under it, a smaller display that reacts to the last drop (see drawDropMonitor); room is made for both.
+  const sbF = frameOf(sbW), dmH = clamp(sbW*0.4, 22, 40), dmGap = 6, dmSpace = dmGap + sbF*2 + dmH;
+  const sbH = Math.max(28, Math.min(sbW*SB_ASPECT, sbBottom - sbTop - sbF*2 - dmSpace));
+  const sbY = clamp(boxY, sbTop + sbF + sbH/2, Math.max(sbTop + sbF + sbH/2, sbBottom - dmSpace - sbF - sbH/2));
   layout.scoreboard = {x: sbL + sbF + sbW/2, y: sbY, w: sbW, h: sbH};
+  layout.dropMonitor = {x: layout.scoreboard.x, y: sbY + sbH/2 + sbF + dmGap + sbF + dmH/2, w: sbW, h: dmH};
 }
 // Where the wrist sits when the pincers are clamped on the lid of a barrel standing at `anchor`.
 function armGrabWrist(anchor){
@@ -907,6 +947,8 @@ const state={
   sector:1,
   // Score for this shift, the current run of good drops, and every alien that came aboard (see enlistAlien).
   score:0, streak:0, roster:[],
+  // The last rock dropped in a barrel, for the display under the score (see noteDrop).
+  lastDrop:null,
   // status: 'ready' (on its slot, usable) | 'carried' (in the robot arm) | 'gone' (retrieved) | 'rising' (coming up from its slot)
   //         | 'destroyed' (blown up by a mismatch; replacement rises after destroyT)
   barrels:[0,1,2,3].map(()=>({value:null, text:null, glyph:null, items:[], holo:0, slots:0, sealed:false, flashT:0, sealT:0, fillDisplay:0,
@@ -1834,7 +1876,7 @@ function scoreDrop(r){
   addScore(MATCH_POINTS + Math.min(state.streak, STREAK_MAX_BONUS));
   state.streak++;
 }
-function resetScore(){ state.score=0; state.streak=0; state.roster=[]; }
+function resetScore(){ state.score=0; state.streak=0; state.roster=[]; state.lastDrop=null; closeDropDialog(true); }
 // The shift's roster: each alien once, from when it first came aboard (beamed in, or cloned) with its
 // face and name, whether or not it's on screen now. One sent out of the airlock is struck off.
 function enlistAlien(a){
@@ -2459,6 +2501,8 @@ function splitBay(){
   }
   const sb=layout.scoreboard, sbF=Math.max(5, sb.w*0.07);
   add(sb.x-sb.w/2-sbF-3, sb.y-sb.h/2-sbF-3, sb.w+sbF*2+6, sb.h+sbF*2+6, drawScoreboard);
+  const dm=layout.dropMonitor;
+  add(dm.x-dm.w/2-sbF-3, dm.y-dm.h/2-sbF-3, dm.w+sbF*2+6, dm.h+sbF*2+6, drawDropMonitor);
   const b=layout.redButton;
   add(b.x-b.r*1.6-3, b.y-b.r*1.6-3, b.r*3.2+6, b.r*3.2+6, drawRedButton);
   const L=layout.lever;
@@ -2840,6 +2884,11 @@ function onDown(e){
   if(hitScoreboard(pos)){
     e.preventDefault();
     openScoresDialog();
+    return;
+  }
+  if(state.lastDrop && hitDropMonitor(pos)){
+    e.preventDefault();
+    openDropDialog();
     return;
   }
   if(hitChuteButton(pos)){
@@ -3462,6 +3511,22 @@ function pressRedButton(){
   }
 }
 
+// Every rock that goes into a barrel (not one bouncing off a sealed lid) is remembered for the display
+// under the score: the rock, the label of the barrel it went in, and after a mismatch the label of a
+// barrel it did belong in (null: none was out, so an empty barrel). Called before the barrel changes.
+function noteDrop(idx, r){
+  const barrel=state.barrels[idx];
+  const label=b=>({text:b.text, glyph:b.glyph||null});
+  const ok = !barrel.value || sameValue(barrel.value, r.value);
+  let right=null;
+  if(!ok){
+    const fits = state.barrels.filter((b,j)=> j!==idx && b.value && sameValue(b.value, r.value));
+    const best = fits.find(b=>b.status==='ready' && !b.sealed) || fits[0];
+    if(best) right=label(best);
+  }
+  state.lastDrop = {ok, t:state.t, rock:{text:r.text, glyph:r.glyph||null},
+    chosen: barrel.value ? label(barrel) : {text:r.text, glyph:r.glyph||null}, right};
+}
 // What a barrel remembers about each rock it takes, so an ejected rock comes back out as itself.
 function rockItem(r){ return {value:r.value, rep:r.rep, text:r.text, glyph:r.glyph||null}; }
 
@@ -3473,6 +3538,7 @@ function handleBarrelDrop(idx, r){
   if(barrel.sealed){
     r.state='falling'; r.fvy=0; return;
   }
+  noteDrop(idx, r);
   if(!barrel.value){
     barrel.value = r.value;
     barrel.text = r.text;
@@ -4667,6 +4733,7 @@ function drawBay(windowView){
   ctx.restore();
   drawChute();
   drawScoreboard();
+  drawDropMonitor();
   drawEmitters();
   drawRedButton();
   drawLever();
@@ -5190,6 +5257,150 @@ function hitScoreboard(pos){
   const b=layout.scoreboard; if(!b) return false;
   const F=Math.max(5, b.w*0.07);
   return Math.abs(pos.x-b.x) <= b.w/2+F && Math.abs(pos.y-b.y) <= b.h/2+F;
+}
+// The drop monitor, under the scoreboard: blank, a green check for a second after a good drop, and after
+// a mismatch a warning triangle beside a magnifying glass that stays up until the next drop. Tapping it
+// (once anything has been dropped) explains the last drop; see openDropDialog.
+const DROP_OK_SHOW = 1;
+const layerDropMonitor=makeLayer(3);
+function dropMonitorMode(){
+  const d=state.lastDrop;
+  if(!d || state.phase==='intro') return 'blank';
+  if(!d.ok) return 'miss';
+  return state.t - d.t < DROP_OK_SHOW ? 'ok' : 'blank';
+}
+function drawDropMonitor(){
+  const b=layout.dropMonitor; if(!b) return;
+  const F=Math.max(5, b.w*0.07), mode=dropMonitorMode();
+  paintLayer(layerDropMonitor, layoutGen+'|'+DPR+'|'+mode, b.x-b.w/2-F-2, b.y-b.h/2-F-2, b.w+F*2+4, b.h+F*2+4, ()=>drawDropMonitorRaw(mode));
+}
+function drawDropMonitorRaw(mode){
+  const b=layout.dropMonitor;
+  const x0=b.x-b.w/2, y0=b.y-b.h/2, F=Math.max(5, b.w*0.07);
+  ctx.save();
+  ctx.fillStyle='#1b212b';
+  roundRectPath(x0-F, y0-F, b.w+F*2, b.h+F*2, 6); ctx.fill();
+  ctx.strokeStyle='#454f60'; ctx.lineWidth=2; ctx.stroke();
+  const g=ctx.createLinearGradient(0,y0,0,y0+b.h);
+  g.addColorStop(0,'#0d2a2a'); g.addColorStop(1,'#071516');
+  ctx.fillStyle=g; ctx.fillRect(x0,y0,b.w,b.h);
+  const s=b.h*0.62, cy=b.y;
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  if(mode==='ok'){
+    ctx.strokeStyle='#7cffb2'; ctx.shadowColor='rgba(124,255,178,0.8)'; ctx.shadowBlur=8;
+    ctx.lineWidth=Math.max(2.5, s*0.16);
+    ctx.beginPath();
+    ctx.moveTo(b.x-s*0.45, cy+s*0.02); ctx.lineTo(b.x-s*0.12, cy+s*0.34); ctx.lineTo(b.x+s*0.5, cy-s*0.34);
+    ctx.stroke();
+  } else if(mode==='miss'){
+    // the warning, left of center
+    const tx=b.x-s*0.62, h=s*0.95, hw=h*0.58;
+    ctx.fillStyle='#ffc93c'; ctx.shadowColor='rgba(255,201,60,0.7)'; ctx.shadowBlur=7;
+    ctx.beginPath(); ctx.moveTo(tx, cy-h/2); ctx.lineTo(tx+hw, cy+h/2); ctx.lineTo(tx-hw, cy+h/2); ctx.closePath();
+    ctx.lineWidth=Math.max(1.5, s*0.08); ctx.strokeStyle='#ffc93c'; ctx.stroke(); ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.fillStyle='#1a1406';
+    ctx.fillRect(tx-h*0.055, cy-h*0.18, h*0.11, h*0.4);
+    ctx.beginPath(); ctx.arc(tx, cy+h*0.36, h*0.065, 0, TAU); ctx.fill();
+    // and a magnifying glass, right of center: look closer
+    const mx=b.x+s*0.5, my=cy-s*0.08, mr=s*0.27;
+    ctx.strokeStyle='#5be6d9'; ctx.shadowColor='rgba(91,230,217,0.7)'; ctx.shadowBlur=7;
+    ctx.lineWidth=Math.max(2, s*0.1);
+    ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU); ctx.stroke();
+    ctx.lineWidth=Math.max(2.5, s*0.14);
+    ctx.beginPath(); ctx.moveTo(mx+mr*0.72, my+mr*0.72); ctx.lineTo(mx+mr*1.75, my+mr*1.75); ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+  ctx.fillStyle='rgba(0,0,0,0.22)';
+  for(let y=y0+1; y<y0+b.h; y+=3) ctx.fillRect(x0, y, b.w, 1);
+  ctx.fillStyle='rgba(150,215,255,0.06)'; ctx.fillRect(x0, y0, b.w, b.h*0.45);
+  ctx.strokeStyle = mode==='miss' ? 'rgba(255,201,60,0.6)' : 'rgba(91,230,217,0.55)'; ctx.lineWidth=1.5;
+  ctx.strokeRect(x0+0.5,y0+0.5,b.w-1,b.h-1);
+  ctx.restore();
+}
+function hitDropMonitor(pos){
+  const b=layout.dropMonitor; if(!b) return false;
+  const F=Math.max(5, b.w*0.07);
+  return Math.abs(pos.x-b.x) <= b.w/2+F && Math.abs(pos.y-b.y) <= b.h/2+F;
+}
+// The explanation: [rock] ──✕──▶ [the barrel it went in]
+//                            ╲──▶ [a barrel it belonged in]
+// or after a good drop just the one arrow. Labels look like the barrels' holograms; a protocol with
+// translate(text) (Spanish) adds the English under each.
+function dropBox(cls, item, tag){
+  const wrap=document.createElement('div'); wrap.className='dd';
+  const box=document.createElement('div'); box.className=cls;
+  let drawn=false;
+  if(item && item.glyph && MODE.drawGlyph){
+    const cv=document.createElement('canvas'), px=Math.round(40*DPR);
+    cv.width=cv.height=px;
+    const o=cv.getContext('2d');
+    if(o){
+      o.setTransform(DPR,0,0,DPR,0,0);
+      const col = cls==='ddRock' ? '255,241,220' : '91,230,217';
+      drawn = MODE.drawGlyph(o, item.glyph, 20, 20, 18, {fill:'rgb('+col+')', empty:'rgba('+col+',0.12)', line:'rgba('+col+',0.8)'});
+      if(drawn) box.appendChild(cv);
+    }
+  }
+  if(!drawn) box.textContent = item ? item.text : 'EMPTY BARREL';
+  if(!item) box.classList.add('empty');
+  wrap.appendChild(box);
+  const en = item && MODE.translate ? MODE.translate(item.text) : '';
+  if(en){ const e=document.createElement('div'); e.className='en'; e.textContent=en; wrap.appendChild(e); }
+  if(tag){ const t=document.createElement('div'); t.className='tag'; t.textContent=tag; wrap.insertBefore(t, wrap.firstChild); }
+  return wrap;
+}
+function openDropDialog(){
+  const d=state.lastDrop; if(!d) return;
+  const title=document.getElementById('dropTitle');
+  title.textContent = d.ok ? 'GOOD DROP' : 'WRONG BARREL';
+  title.className = d.ok ? 'ok' : 'miss';
+  const dia=document.getElementById('dropDiagram');
+  dia.innerHTML='';
+  dia.appendChild(dropBox('ddRock', d.rock));
+  const NS='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(NS,'svg');
+  svg.setAttribute('class','arrows'); svg.setAttribute('preserveAspectRatio','none');
+  dia.appendChild(svg);
+  const dests=document.createElement('div'); dests.className='dests';
+  const chosen=dropBox('ddHolo', d.chosen, d.ok ? '' : 'YOU CHOSE');
+  if(!d.ok) chosen.querySelector('.ddHolo').classList.add('wrong');
+  dests.appendChild(chosen);
+  if(!d.ok) dests.appendChild(dropBox('ddHolo', d.right, 'BELONGS WITH'));
+  dia.appendChild(dests);
+  document.getElementById('dropDialog').classList.remove('hidden');
+  // arrows once the boxes have their sizes: from the rock's right edge to each label's left edge
+  const r=svg.getBoundingClientRect(), rock=dia.firstChild.querySelector('.ddRock').getBoundingClientRect();
+  const W2=r.width, y0=rock.top+rock.height/2-r.top;
+  svg.setAttribute('viewBox', '0 0 '+W2+' '+r.height);
+  const ys=[...dests.querySelectorAll('.ddHolo')].map(el=>{ const q=el.getBoundingClientRect(); return q.top+q.height/2-r.top; });
+  const arrow=(y1, col)=>{
+    const p=document.createElementNS(NS,'path');
+    const x0=4, x1=W2-6, mx=W2*0.35;
+    p.setAttribute('d', 'M'+x0+' '+y0+' L'+mx+' '+y0+' L'+(x1-8)+' '+y1+' L'+x1+' '+y1);
+    p.setAttribute('fill','none'); p.setAttribute('stroke',col); p.setAttribute('stroke-width','2.5');
+    p.setAttribute('stroke-linejoin','round'); svg.appendChild(p);
+    const h=document.createElementNS(NS,'path');
+    h.setAttribute('d', 'M'+(x1-7)+' '+(y1-5)+' L'+(x1+1)+' '+y1+' L'+(x1-7)+' '+(y1+5)+'Z');
+    h.setAttribute('fill',col); svg.appendChild(h);
+    return {x:(mx+x1-8)/2, y:(y0+y1)/2};
+  };
+  if(d.ok) arrow(ys[0], '#7cffb2');
+  else {
+    const m=arrow(ys[0], '#ff5252');
+    const x=document.createElementNS(NS,'path'), k=6;
+    x.setAttribute('d', `M${m.x-k} ${m.y-k} L${m.x+k} ${m.y+k} M${m.x+k} ${m.y-k} L${m.x-k} ${m.y+k}`);
+    x.setAttribute('stroke','#ff5252'); x.setAttribute('stroke-width','3'); x.setAttribute('stroke-linecap','round');
+    svg.appendChild(x);
+    arrow(ys[1], '#7cffb2');
+  }
+  AudioEngine.uiBlip(520);
+}
+function closeDropDialog(quiet){
+  const el=document.getElementById('dropDialog');
+  if(!el || el.classList.contains('hidden')) return;
+  el.classList.add('hidden');
+  if(!quiet) AudioEngine.uiBlip(330);
 }
 function drawChuteButton(armed){
   const b=layout.chuteBtn, ch=state.chute;
@@ -5785,6 +5996,7 @@ const SaveGame = (()=>{
     return {
       v:VERSION, mode:MODE.id, W, H, sector:state.sector, hull:state.hull, scars:state.scars,
       // anyone mid-launch isn't saved, so they're as good as gone: off the saved roster too
+      lastDrop:state.lastDrop && Object.assign({}, state.lastDrop, {t:null}),
       score:state.score, streak:state.streak, roster:state.roster.filter(m=>!state.aliens.some(a=>a.id===m.id && (a.state==='launching' || a.state==='spaced'))),
       irisOpen:state.irisOpen, irisTarget:state.irisTarget, leverDown:state.leverDown,
       nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector,
@@ -5841,6 +6053,7 @@ function restoreGame(d){
   document.getElementById('sectorValue').textContent = String(d.sector).padStart(2,'0');
   state.hull=d.hull; renderHull();
   state.score=d.score||0; state.streak=d.streak||0; state.roster=Array.isArray(d.roster) ? d.roster : [];
+  state.lastDrop = d.lastDrop && d.lastDrop.rock ? Object.assign({}, d.lastDrop, {t:-Infinity}) : null;
   // Battle damage as it was (a save from before it was tracked gets fresh marks to match the hull).
   state.scars = Array.isArray(d.scars) ? d.scars : [];
   state.scarGroup = state.scars.reduce((m,s)=>Math.max(m, s.group), 0);
@@ -5989,6 +6202,8 @@ function takeAutoResumeFlag(){
 })();
 document.getElementById('newShiftBtn').addEventListener('click', ()=>beginShift(false));
 document.getElementById('scoresClose').addEventListener('click', closeScoresDialog);
+document.getElementById('dropClose').addEventListener('click', ()=>closeDropDialog());
+document.getElementById('dropDialog').addEventListener('click', e=>{ if(e.target.id==='dropDialog') closeDropDialog(); });
 document.getElementById('scoresDialog').addEventListener('click', e=>{ if(e.target.id==='scoresDialog') closeScoresDialog(); });
 document.getElementById('restartBtn').addEventListener('click', ()=>{
   document.getElementById('endOverlay').classList.add('hidden');
