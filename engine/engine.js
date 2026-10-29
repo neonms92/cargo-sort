@@ -2866,9 +2866,6 @@ function spawnDebrisRain(x,y){
 function spawnSealRing(x,y){
   state.particles.push({type:'ring', x,y, life:0, maxLife:1.1, size:layout.barrelR});
 }
-function spawnEjectTrail(x,y,vx,vy,pal){
-  state.particles.push({type:'ejectRock', x,y,vx,vy, life:0, maxLife:1.4, size:rand(10,16), pal});
-}
 function spawnEjectSpark(x,y){
   for(let i=0;i<10;i++){
     const ang=rand(0,TAU), sp=rand(40,140);
@@ -3676,22 +3673,17 @@ function ejectBarrel(idx){
       const sp=rand(160,260);
       const vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
       const x=anchor.x+rand(-10,10), y=anchor.y-layout.barrelH*0.5;
-      if(state.irisOpen>0.5){
-        spawnEjectTrail(x, y, vx, vy, choice(ROCK_PALETTES));
-      } else {
-        // Iris closed — the rocks have nowhere to go. Spawn real rocks carrying the values they
-        // went in with and fling them into the air; they land and stay fully sortable.
-        // (A barrel from a save made before items were tracked has none, so those rocks reroll.)
-        const it = formerItems[i];
-        const newRock = createRock(it ? it.value : formerValue, it);
-        newRock.x = x; newRock.y = y;
-        newRock.baseX = x; newRock.baseY = y;
-        newRock.state = 'falling';
-        newRock.scored = true;   // counted on the way in
-        newRock.fvx = vx;
-        newRock.fvy = vy;
-        state.rocks.push(newRock);
-      }
+      // The rocks always land on the floor, carrying the values they went in with, fully sortable.
+      // (A barrel from a save made before items were tracked has none, so those rocks reroll.)
+      const it = formerItems[i];
+      const newRock = createRock(it ? it.value : formerValue, it);
+      newRock.x = x; newRock.y = y;
+      newRock.baseX = x; newRock.baseY = y;
+      newRock.state = 'falling';
+      newRock.scored = true;   // counted on the way in
+      newRock.fvx = vx;
+      newRock.fvy = vy;
+      state.rocks.push(newRock);
     }, i*90);
   }
   updateBarrelDots();
@@ -4568,8 +4560,6 @@ function updateParticles(dt){
       p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy += 520*dt; p.vx*=0.985; p.rot+=p.spin*dt;
     } else if(p.type==='spark'){
       p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.94; p.vy*=0.94;
-    } else if(p.type==='ejectRock'){
-      p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy -= 40*dt;
     } else if(p.type==='zap'){
       p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy += 700*dt; p.vx*=0.985;
     }
@@ -5988,15 +5978,6 @@ function drawParticles(){
       g.addColorStop(0,'rgba(235,245,255,0.95)'); g.addColorStop(0.4,'rgba(150,200,255,0.5)'); g.addColorStop(1,'rgba(150,200,255,0)');
       ctx.fillStyle=g;
       ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,TAU); ctx.fill();
-      ctx.restore();
-    } else if(p.type==='ejectRock'){
-      ctx.save();
-      ctx.globalAlpha = 1-t;
-      ctx.translate(p.x,p.y);
-      const grad=ctx.createRadialGradient(0,0,0,0,0,p.size);
-      grad.addColorStop(0,p.pal.b); grad.addColorStop(1,p.pal.c);
-      ctx.fillStyle=grad;
-      ctx.beginPath(); ctx.arc(0,0,p.size*(1-t*0.5),0,TAU); ctx.fill();
       ctx.restore();
     }
   });
