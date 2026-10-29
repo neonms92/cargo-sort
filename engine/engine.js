@@ -2399,14 +2399,16 @@ function makeSprite(x, y, w, h, fn){
   return {cv, w, h, cx:x+w/2, cy:y+h/2};
 }
 function failureVP(){ return {x:W*0.5, y:H*0.42}; }
-// Every piece gets a brief outward kick from the blast, then drifts in towards the middle of the
-// screen (`pull`: share of its distance from the vanishing point closed per second) as it recedes.
+// Every piece gets a brief outward kick from the blast, then, as it recedes, drifts towards a spot
+// of its own somewhere on the screen (tX, tY, relative to the vanishing point), so the wreckage stays
+// off the edges without bunching up in the middle. `pull`: share of the way there closed per second.
 function addPiece(f, kind, at, extra){
   const vp=failureVP(), X=at.x-vp.x, Y=at.y-vp.y, d=Math.hypot(X,Y)||1;
   const k=clamp(Math.min(W,H)/700, 0.55, 1.2);
   const burst=rand(40,120)*k;
   f.pieces.push(Object.assign({kind, X, Y, Z:0, rot:0, X0:X, Y0:Y,
-    vX:rand(-15,15)*k, vY:rand(-15,15)*k, bX:X/d*burst, bY:Y/d*burst, pull:rand(0.02,0.06),
+    vX:rand(-15,15)*k, vY:rand(-15,15)*k, bX:X/d*burst, bY:Y/d*burst, pull:rand(0.25,0.5),
+    tX:rand(0.1,0.9)*W-vp.x, tY:rand(0.1,0.9)*H-vp.y,
     vZ:rand(0.15,0.45), spin:rand(-0.6,0.6), alpha:1}, extra));
   return f.pieces[f.pieces.length-1];
 }
@@ -2556,7 +2558,9 @@ function updateFailure(dt){
   }
   const decay=Math.exp(-dt*4);
   for(const p of f.pieces){
-    p.X += (p.vX+p.bX)*dt - p.X*p.pull*dt; p.Y += (p.vY+p.bY)*dt - p.Y*p.pull*dt;
+    // a piece at depth Z shows up at X/(1+Z), so it sits on its spot when X = tX*(1+Z)
+    p.X += (p.vX+p.bX)*dt + (p.tX*(1+p.Z)-p.X)*p.pull*dt;
+    p.Y += (p.vY+p.bY)*dt + (p.tY*(1+p.Z)-p.Y)*p.pull*dt;
     p.bX*=decay; p.bY*=decay;
     p.Z += p.vZ*dt; p.rot += p.spin*dt;
   }
