@@ -2714,7 +2714,12 @@ function hitRock(pos){
 }
 function hitAlien(pos){
   // Thrown aliens can be caught mid-air, but not ones on a scripted fall (booted by the arm, shaken off the ring).
+  // Launched aliens can be caught too, in case of a change of heart: still in the airlock, or out
+  // in space while they're in view through the open iris.
+  const iris=layout.iris;
+  const inWindow = a=> state.irisOpen>0.5 && Math.hypot(a.x-iris.cx, a.y-iris.cy) < iris.r;
   const candidates = state.aliens.filter(a=> (a.state==='floating' && state.irisOpen>0.5) || a.state==='settled' || a.state==='chute' ||
+    a.state==='launching' || (a.state==='spaced' && inWindow(a)) ||
     (a.state==='falling' && !a.kicked && !a.fallToTrack2));
   // Nearest-looking first among the hits, then nearest to the pointer (a packed airlock is all one depth).
   const hits = candidates.map(a=>({a, d:Math.hypot(pos.x-a.x, pos.y-a.y)}))
@@ -2763,6 +2768,10 @@ function onDown(e){
     e.preventDefault();
     breakStackAt(a); // everyone above tumbles off; anyone below keeps walking
     if(a.state==='chute'){ a.message=choice(ALIEN_CHUTE_RESCUE_MESSAGES); a.bubbleT=2.5; a.tumbled=true; a.rot=0; }
+    if(a.state==='launching' || a.state==='spaced'){
+      a.message=choice(ALIEN_LAUNCH_RESCUE_MESSAGES); a.bubbleT=2.5; a.tumbled=true;
+      a.rot=0; a.opacity=1; a.chuteScale=null; a.farewell=false;
+    }
     if(!a.greeted){ greetAlien(a); a.tumbled = true; }   // said hello in the beam; nothing more when it lands
     else enlistAlien(a);
     state.held=a;
@@ -2978,7 +2987,8 @@ function forceFieldRebound(a){
 // The only way to really get rid of aliens: drop them into the glass box on the left wall (as many
 // as you like; they tumble and pile up inside, and an overstuffed box jitters), then press LAUNCH.
 // Everyone is sucked out through the outer hatch, one after another, and drifts past the iris
-// window; no more than two of them get a word in on the way. Until launch they can be grabbed out.
+// window; no more than two of them get a word in on the way. They can be grabbed back out the whole
+// time, from the box or through the window, and only leave the roster once they've drifted off.
 const CHUTE_SUCK_DUR = 0.45;     // shrinking out through the outer hatch
 const CHUTE_HATCH_DUR = 1.2;     // outer hatch stays open this long after launch
 const CHUTE_FLIGHT_DUR = 3.4;    // drifting across the iris window
@@ -3013,6 +3023,13 @@ const ALIEN_CHUTE_CROWD_MESSAGES=[
   "Someone's on my foot.",
   "Room for one more? NO.",
   "This is worse than the shuttle.",
+];
+const ALIEN_LAUNCH_RESCUE_MESSAGES=[
+  "You came back for me!",
+  "I knew you'd miss me!",
+  "Brrr! Space is cold!",
+  "Change of heart?",
+  "Best. Rescue. Ever.",
 ];
 const ALIEN_CHUTE_RESCUE_MESSAGES=[
   "Freedom!",
@@ -3065,8 +3082,6 @@ function launchChute(){
   ch.press = 0.15;
   if(!list.length){ AudioEngine.uiBlip(160); return; }
   for(let i=list.length-1;i>0;i--){ const j=randInt(0,i); [list[i],list[j]]=[list[j],list[i]]; }
-  const ids = new Set(list.map(a=>a.id));
-  state.roster = state.roster.filter(m=>!ids.has(m.id));   // jettisoned: off the roster
   // The first one out speaks, and so does the last, held back if need be so its line comes after the
   // first one's is over rather than on top of it.
   const last=list.length-1;
@@ -3232,7 +3247,10 @@ function updateChuteAlien(a, dt){
       a.message = choice(ALIEN_FAREWELL_MESSAGES);
       a.bubbleT = CHUTE_FAREWELL_SECONDS;
     }
-    if(u>=1) a.state='gone';
+    if(u>=1){
+      a.state='gone';
+      state.roster = state.roster.filter(m=>m.id!==a.id);   // drifted away for good: off the roster
+    }
   }
 }
 
@@ -5669,7 +5687,8 @@ const SaveGame = (()=>{
     }
     return {
       v:VERSION, mode:MODE.id, W, H, sector:state.sector, hull:state.hull, scars:state.scars,
-      score:state.score, streak:state.streak, roster:state.roster,
+      // anyone mid-launch isn't saved, so they're as good as gone: off the saved roster too
+      score:state.score, streak:state.streak, roster:state.roster.filter(m=>!state.aliens.some(a=>a.id===m.id && (a.state==='launching' || a.state==='spaced'))),
       irisOpen:state.irisOpen, irisTarget:state.irisTarget, leverDown:state.leverDown,
       nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector,
       alienCloneCounters:state.alienCloneCounters,
