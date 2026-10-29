@@ -14,31 +14,71 @@ window.CARGO_MODE = (function(){
   const choice=(arr)=>arr[Math.floor(Math.random()*arr.length)];
   function gcd(a,b){ return b===0 ? a : gcd(b, a%b); }
 
-  const VALUE_POOL_EASY=[
-    {n:1,d:2},{n:1,d:4},{n:3,d:4},{n:1,d:5},{n:2,d:5},{n:3,d:5},{n:4,d:5},
-    {n:1,d:10},{n:3,d:10},{n:7,d:10},{n:9,d:10}
-  ];
-  const VALUE_POOL_HARD=[
-    {n:1,d:8},{n:3,d:8},{n:5,d:8},{n:7,d:8},{n:1,d:20},{n:3,d:20},{n:1,d:25},{n:1,d:50}
-  ];
-  // Non-terminating decimals — introduced only in later sectors.
-  const VALUE_POOL_REPEATING=[
-    {n:1,d:3},{n:2,d:3},{n:1,d:6},{n:5,d:6},{n:1,d:9},{n:2,d:9},{n:4,d:9}
-  ];
-  function currentPool(sector){
-    let pool = VALUE_POOL_EASY.slice();
-    if(sector>=3) pool = pool.concat(VALUE_POOL_HARD);
-    if(sector>=5) pool = pool.concat(VALUE_POOL_REPEATING);
-    return pool;
+  // Which denominators a band draws from (band: see CARGO_BAND in the engine). Each band adds some.
+  const DENOMS = [[2,4,5,10], [2,4,5,8,10,20], [2,3,4,5,6,8,9,10,20], [2,3,4,5,6,8,9,10,20,25],
+                  [2,3,4,5,6,7,8,9,10,11,12,16,20,25], null, null];
+  const denomsFor = band => DENOMS[Math.min(band.i, 4)];
+  function universe(band){
+    const out=[];
+    for(const d of denomsFor(band)) for(let n=1;n<d;n++) if(gcd(n,d)===1) out.push(makeValue(n,d));
+    return out;
   }
-  // Chance that a fraction rock displays an unreduced equivalent (e.g. 3/12 instead of 1/4).
-  // Ramps in gradually starting a couple of sectors after the harder denominators appear.
-  function unreducedChance(sector){
-    if(sector<=2) return 0;
-    if(sector===3) return 0.2;
-    if(sector===4) return 0.32;
-    return 0.45;
+  // Chance that a fraction rock shows an unreduced equivalent (3/12 for 1/4), and the biggest multiplier.
+  const UNREDUCED = [0, 0.2, 0.35, 0.45, 0.45, 0.5, 0.5];
+  const MULT_MAX  = [1, 4, 4, 5, 5, 7, 7];
+  // From the committed band on, repeating decimals carry a third place (0.667, 66.7%).
+  const fine = sector => CARGO_BAND(sector).i>=4;
+  // Every way a value can read, so no two values in play ever show the same text.
+  const readings = (val, sector) => [valueText(val,'decimal',false,sector), valueText(val,'percent',false,sector)];
+  const clash = (a, b, sector) => { const ra=readings(a,sector), rb=readings(b,sector); return ra.some(t=>rb.includes(t)); };
+  // A sector's four barrel values. The band sets how many close pairs there are and how close:
+  //   0: all at least 0.15 apart · 1: one pair within 0.1 · 2: one pair within 0.05 · 3: two pairs within 0.05
+  //   4: two pairs within 0.03 · 5: all four inside a window 0.1 wide · 6: that window shrinks to 0.03
+  // Near misses are other values within a whisker of one on the barrels.
+  function planSector(sector, band){
+    const U = universe(band);
+    const ok = (set, v) => !set.some(x=>x.key===v.key || clash(x,v,sector));
+    const far = (set, v, g) => set.every(x=>Math.abs(x.decimal-v.decimal)>=g);
+    const pairWithin = (g, set) => {     // a value plus a near neighbor, both apart from `set`
+      for(let t=0;t<60;t++){
+        const a=choice(U); if(!ok(set,a) || !far(set,a,0.1)) continue;
+        const near=U.filter(v=>v.key!==a.key && Math.abs(v.decimal-a.decimal)<=g && ok(set.concat([a]),v) && far(set,v,0.1));
+        if(near.length) return [a, choice(near)];
+      }
+      return null;
+    };
+    let values=null;
+    for(let tries=0; tries<200 && !values; tries++){
+      let set=[];
+      if(band.i>=5){
+        const w = band.i===5 ? 0.1 : Math.max(0.03, 0.1-0.007*band.kill);
+        const lo = rand(0.05, 0.95-w);
+        const inWin = U.filter(v=>v.decimal>=lo && v.decimal<=lo+w);
+        for(const v of inWin.sort(()=>Math.random()-0.5)) if(set.length<4 && ok(set,v)) set.push(v);
+      } else {
+        const pairs = band.i>=3 ? 2 : band.i>=1 ? 1 : 0;
+        const g = [0, 0.1, 0.05, 0.05, 0.03][band.i];
+        for(let p=0;p<pairs;p++){ const pr=pairWithin(g, set); if(pr) set=set.concat(pr); }
+        for(let t=0;t<100 && set.length<4;t++){
+          const v=choice(U);
+          if(ok(set,v) && far(set,v, band.i===0 ? 0.15 : 0.1)) set.push(v);
+        }
+      }
+      if(set.length===4) values=set;
+    }
+    if(!values){ values=[]; while(values.length<4){ const v=choice(U); if(ok(values,v)) values.push(v); } }
+    let decoys=[];
+    if(band.i>=3){
+      const reach = [0,0,0, 0.05, 0.04, 0.03, Math.max(0.015, 0.03-0.002*band.kill)][band.i];
+      const pool = band.i>=5 ? universe({i:4}) : U;
+      // widen the reach until something's close enough to tempt
+      for(let r=reach; !decoys.length && r<=0.2; r*=2)
+        decoys = pool.filter(v=> ok(values,v) && values.some(x=>Math.abs(x.decimal-v.decimal)<=r));
+      decoys = decoys.sort(()=>Math.random()-0.5).slice(0,6);
+    }
+    return {values, decoys};
   }
+  const rand=(a,b)=>a+Math.random()*(b-a);
   function makeValue(n,d){
     const g=gcd(n,d);
     n/=g; d/=g;
@@ -50,36 +90,36 @@ window.CARGO_MODE = (function(){
     while(x%5===0) x/=5;
     return x===1;
   }
-  function fmtDecimal(x, repeating){
-    let s = x.toFixed(repeating?2:3);
+  function fmtDecimal(x, repeating, places){
+    let s = x.toFixed(repeating?places:4);
     if(!repeating) s = s.replace(/0+$/,'').replace(/\.$/,'');
     if(!s.startsWith('0') && x<1) s = '0'+s;
     return s;
   }
-  function fmtPercent(x, repeating){
+  function fmtPercent(x, repeating, places){
     let p = x*100;
-    if(repeating) return Math.round(p)+'%';
+    if(repeating) return (places>2 ? p.toFixed(1) : Math.round(p))+'%';
     p = Math.round(p*100)/100;
     return (Number.isInteger(p)?p.toString():p.toFixed(p*10%1===0?1:2)) + '%';
   }
-  function fractionText(val, unreduced){
+  function fractionText(val, unreduced, sector){
     if(unreduced){
-      const k = choice([2,3,4]);
+      const k = 2+Math.floor(Math.random()*(MULT_MAX[CARGO_BAND(sector).i]-1));
       return (val.n*k)+'/'+(val.d*k);
     }
     return val.n+'/'+val.d;
   }
-  function valueText(val, rep, allowUnreduced){
-    const repeating = !isTerminating(val.d);
-    if(rep==='fraction') return fractionText(val, allowUnreduced);
-    if(rep==='decimal') return fmtDecimal(val.decimal, repeating);
-    return fmtPercent(val.decimal, repeating);
+  function valueText(val, rep, allowUnreduced, sector){
+    const repeating = !isTerminating(val.d), places = fine(sector) ? 3 : 2;
+    if(rep==='fraction') return fractionText(val, allowUnreduced, sector);
+    if(rep==='decimal') return fmtDecimal(val.decimal, repeating, places);
+    return fmtPercent(val.decimal, repeating, places);
   }
-  // Pictographic fractions: only these reduced denominators can be shown as a pie.
-  const PIE_DENOMS=[2,3,4,5];
-  function pickRep(val){
+  // Pictographic fractions: only these denominators can be shown as a pie (more slices once invested).
+  const pieDenoms = sector => CARGO_BAND(sector).i>=2 ? [2,3,4,5,6,8] : [2,3,4,5];
+  function pickRep(val, sector){
     const reps=['fraction','decimal','percent'];
-    if(PIE_DENOMS.includes(val.d)) reps.push('pie');
+    if(pieDenoms(sector).includes(val.d)) reps.push('pie');
     return choice(reps);
   }
   // SVG markup for the scanner readout.
@@ -117,20 +157,19 @@ window.CARGO_MODE = (function(){
     title: 'OXYGEN SORT',
     intro: "Sort the rocks by their oxygen content.",
     scanLabel: 'O2 CONCENTRATION',
-    pickValue(sector){
-      const pair = choice(currentPool(sector));
-      return makeValue(pair.n, pair.d);
-    },
+    pickValue(sector){ return choice(universe(CARGO_BAND(sector))); },
+    planSector,
     makeItem(value, sector){
-      const rep = pickRep(value);
-      const allowUnreduced = (rep==='fraction'||rep==='pie') && Math.random()<unreducedChance(sector);
+      const rep = pickRep(value, sector);
+      const allowUnreduced = (rep==='fraction'||rep==='pie') && Math.random()<UNREDUCED[CARGO_BAND(sector).i];
       if(rep==='pie'){
-        // The only unreduced pie that stays within the whitelist is halves drawn as quarters.
-        const k = allowUnreduced && value.d*2<=PIE_DENOMS[PIE_DENOMS.length-1] ? 2 : 1;
+        // An unreduced pie has to stay within the slice counts that can be drawn (quarters as eighths).
+        const ks = [2,3,4].filter(k=> pieDenoms(sector).includes(value.d*k));
+        const k = allowUnreduced && ks.length ? choice(ks) : 1;
         const pie={n:value.n*k, d:value.d*k};
         return {rep, text:pie.n+'/'+pie.d, glyph:pie};
       }
-      return {rep, text:valueText(value, rep, allowUnreduced)};
+      return {rep, text:valueText(value, rep, allowUnreduced, sector)};
     },
     same(a,b){ return Math.abs(a.decimal-b.decimal) < 0.0005; },
     repLabel(item){ return 'REPRESENTATION: ' + (item.glyph ? 'PICTOGRAPH' : item.rep.toUpperCase()); },

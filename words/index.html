@@ -15,67 +15,142 @@
 window.CARGO_MODE = (function(){
   const choice=(arr)=>arr[Math.floor(Math.random()*arr.length)];
 
-  // tier 1 from the start, tier 2 joins in sector 3, tier 3 in sector 5
+  // three tiers of words per type, harder as the bands go on (see poolFor)
   const TYPES = {
-    noun: {from:1, words:[
+    noun: {words:[
       ['puppy','kitten','elephant','giraffe','banana','pancake','teacher','kitchen','mountain','library',
        'dragon','planet','island','basket','window','river','castle','spaceship','dentist','pizza'],
       ['museum','umbrella','astronaut','volcano','telescope','festival','orchestra','kindness','courage','friendship'],
       ['happiness','honesty','freedom','knowledge','curiosity','adventure','patience','imagination'],
     ]},
-    verb: {from:1, words:[
+    verb: {words:[
       ['eat','sing','write','bring','give','think','grow','ran','ate','sang','threw','swam','laughed','climbed','shouted','carried'],
       ['explored','discover','imagine','borrowed','arrive','decided','explain','celebrate','whispered','wandered'],
       ['investigate','memorize','forgave','squeezed','hesitated','persuade','encourage','complained'],
     ]},
-    adjective: {from:1, words:[
+    adjective: {words:[
       ['happy','tiny','fluffy','noisy','huge','shiny','sleepy','hungry','silly','delicious','friendly','gigantic','sticky','smelly','beautiful'],
       ['enormous','curious','ancient','fragile','generous','nervous','invisible','gentle','clumsy','peaceful'],
       ['mysterious','ridiculous','magnificent','terrible','courageous','grumpy','marvelous','enthusiastic'],
     ]},
-    adverb: {from:1, words:[
+    adverb: {words:[
       ['quickly','slowly','loudly','quietly','happily','sadly','carefully','softly','never','always','often','suddenly','gently','very'],
       ['eventually','rarely','nearly','cheerfully','finally','bravely','recently','almost','politely','already'],
       ['seldom','perhaps','extremely','furiously','reluctantly','barely','abruptly'],
     ]},
-    pronoun: {from:3, words:[
+    pronoun: {words:[
       ['she','he','they','we','them','us','him','it','myself','yours'],
       ['themselves','yourself','ours','theirs','everybody','nobody','someone'],
       ['whoever','herself','itself','anyone','everyone'],
     ]},
-    preposition: {from:3, words:[
+    preposition: {words:[
       ['under','between','into','onto','beside','with','from','of','at','toward'],
       ['beneath','among','during','without','upon','against','beyond'],
       ['despite','throughout','amid','amongst','unlike'],
     ]},
-    conjunction: {from:5, words:[
+    conjunction: {words:[
       ['and','but','or','because','if'],
       ['although','unless','nor','whereas'],
       ['whether','lest','whenever'],
     ]},
-    interjection: {from:5, words:[
+    interjection: {words:[
       ['wow','oops','ouch','hooray','yikes','phew','hey','uh-oh','whoa','yay'],
       ['eek','ahoy','aha','alas','hmm','yippee'],
       ['gee','huzzah','ugh','golly'],
     ]},
   };
-  const tierFor = sector => sector>=5 ? 3 : sector>=3 ? 2 : 1;
+  // Words whose spelling points at another type: adjectives ending in -ly, adverbs without it, nouns
+  // ending in -ly. Kept out until players have the basics (band 1), then they're the first trap.
+  const TRAPS = new Set(['silly','friendly','smelly','lonely','lovely','ugly','chilly','curly','jolly','lively','costly','cowardly',
+    'never','always','often','very','already','almost','seldom','perhaps','soon','quite','twice',
+    'belly','jelly','family','butterfly','lily','holly']);
+  TYPES.adjective.words[1].push('lonely','lovely','ugly','chilly','curly','jolly');
+  TYPES.adjective.words[2].push('lively','costly','cowardly');
+  TYPES.adverb.words[1].push('soon','quite','twice');
+  TYPES.noun.words[1].push('belly','jelly','family','butterfly','lily','holly');
+  // Same root, different type: the noun, verb, adjective and adverb that grow from one word.
+  // A missing member is null. Sorting a family apart is the committed and impressive bands' trap.
+  const ROOTS = [
+    ['decision','decide','decisive','decisively'], ['beauty','beautify','beautiful','beautifully'],
+    ['sadness','sadden','sad','sadly'],             ['strength','strengthen','strong','strongly'],
+    ['creation','create','creative','creatively'],  ['danger','endanger','dangerous','dangerously'],
+    ['courage','encourage','courageous','courageously'], ['glory','glorify','glorious','gloriously'],
+    ['simplicity','simplify','simple','simply'],    ['terror','terrify','terrible','terribly'],
+    ['attraction','attract','attractive','attractively'], ['persuasion','persuade','persuasive','persuasively'],
+    ['obedience','obey','obedient','obediently'],   ['fury','infuriate','furious','furiously'],
+    ['mystery','mystify','mysterious','mysteriously'], ['horror','horrify','horrible','horribly'],
+    ['intensity','intensify','intense','intensely'], ['purity','purify','pure','purely'],
+    ['friendship','befriend','friendly',null],      ['clarity','clarify',null,'clearly'],
+    ['darkness','darken',null,null],                ['generosity',null,'generous','generously'],
+    ['curiosity',null,'curious','curiously'],       ['violence',null,'violent','violently'],
+    ['loyalty',null,'loyal','loyally'],             ['explanation','explain',null,null],
+  ];
+  const ROOT_TYPES = ['noun','verb','adjective','adverb'];
+  // Formal and rare words, one type each, for the kill screens.
+  const RARE = {
+    noun:['serendipity','conundrum','quandary','euphoria','catastrophe','paradigm','friendliness'],
+    verb:['procrastinate','obliterate','scrutinize','exacerbate','ameliorate','ruminate'],
+    adjective:['ubiquitous','gregarious','meticulous','ephemeral','lackadaisical','surreptitious'],
+    adverb:['hence','thus','henceforth','nonetheless','hitherto','thereby','forthwith','amicably'],
+    pronoun:['whomever','oneself','whosoever'],
+    preposition:['amid','amidst','via','atop','unto','sans'],
+    conjunction:['whereas','lest','whilst','albeit'],
+    interjection:['alas','egad','zounds','gadzooks','huzzah'],
+  };
+  // Types that get mixed up with each other, for confusable barrels and near misses.
+  const CONFUSE = {preposition:['conjunction','adverb'], conjunction:['preposition'], adjective:['adverb'], adverb:['adjective','preposition'],
+                   noun:['verb','pronoun'], verb:['noun'], pronoun:['noun'], interjection:['adverb']};
+  const CORE = ['noun','verb','adjective','adverb'], ALL = Object.keys(TYPES);
+  const shuffle = a => a.slice().sort(()=>Math.random()-0.5);
+  // band 0-1: the four core types · 2: any four · 3+: four that include confusable pairs (3: one or two,
+  // 4: two) · 5+: the core four, so whole root families can be sorted apart. Near misses from band 3:
+  // a type confusable with one on the barrels.
+  function planSector(sector, band){
+    let types;
+    if(band.i<=1 || band.i>=5) types = CORE.slice();
+    else if(band.i===2) types = shuffle(ALL).slice(0,4);
+    else {
+      types = [];
+      const pairs = band.i===3 ? 1+(Math.random()<0.5) : 2;
+      for(let t=0;t<20 && types.length<pairs*2;t++){
+        const a = choice(ALL); if(types.includes(a)) continue;
+        const b = choice(CONFUSE[a].filter(x=>!types.includes(x))||[]); if(!b) continue;
+        types.push(a,b);
+      }
+      for(const k of shuffle(ALL)) if(types.length<4 && !types.includes(k)) types.push(k);
+    }
+    const decoys = band.i<3 ? [] : [...new Set(types.flatMap(k=>CONFUSE[k]))].filter(k=>!types.includes(k));
+    // the kill screens mix in every other type as a near miss too (as does any band whose barrels
+    // already hold every confusable type)
+    if(band.i>=6 || (band.i>=3 && !decoys.length)) ALL.forEach(k=>{ if(!types.includes(k) && !decoys.includes(k)) decoys.push(k); });
+    return {values: types.map(key=>({key})), decoys: decoys.map(key=>({key}))};
+  }
+  function poolFor(key, sector){
+    const band = CARGO_BAND(sector);
+    const tiers = TYPES[key].words.slice(0, band.i>=4 ? 3 : band.i>=2 ? 2 : 1);
+    let pool = [].concat(...tiers);
+    if(band.i===0) pool = pool.filter(w=>!TRAPS.has(w));
+    const r = ROOT_TYPES.indexOf(key);
+    const roots = r<0 ? [] : ROOTS.map(f=>f[r]).filter(Boolean);
+    // committed: half the words come from root families; impressive on: nearly all; kill screens add rare words
+    if(band.i>=6) return Math.random()<0.5 ? RARE[key] : roots.length ? roots : RARE[key];
+    if(band.i===5 && roots.length && Math.random()<0.85) return roots;
+    if(band.i===4 && roots.length && Math.random()<0.5) return roots;
+    return pool;
+  }
   const recent = [];   // don't repeat a word for a while
-
   return {
     id: 'words',
     title: 'WORD SORT',
     intro: "Sort the words by their type.",
     scanLabel: 'SPECIMEN TAG',
-    pickValue(sector){
-      const types = Object.keys(TYPES).filter(k=>sector>=TYPES[k].from);
-      const key = choice(types);
-      return {key};
-    },
-    makeItem(value, sector){
-      const tiers = TYPES[value.key].words.slice(0, tierFor(sector));
-      let pool = [].concat(...tiers).filter(w=>!recent.includes(w));
-      if(!pool.length) pool = [].concat(...tiers);
+    pickValue(sector){ return {key: choice(CORE)}; },
+    planSector,
+    makeItem(value, sector, labels){
+      const all = poolFor(value.key, sector);
+      const fresh = all.filter(w=>!(labels||[]).includes(w));
+      let pool = fresh.filter(w=>!recent.includes(w));
+      if(!pool.length) pool = fresh.length ? fresh : all;
       const text = choice(pool);
       recent.push(text); if(recent.length>12) recent.shift();
       return {rep:'word', text};

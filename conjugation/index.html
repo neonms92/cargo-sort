@@ -23,18 +23,18 @@ window.CARGO_MODE = (function(){
   // yo and él share a form in several tenses (hablaba, hable): "1ST OR 3RD PERSON SINGULAR"
   const personText = ps => ps.length===1 ? PERSONS[ps[0]]
     : ps.map(p=>PERSONS[p].split(' ')[0]).join(' OR ') + ' PERSON ' + PERSONS[ps[0]].split(' ')[2];
-  // tense: [scanner name, first sector it appears]
+  // tense: [scanner name, first difficulty band it appears in (see CARGO_BAND in the engine)]
   const TENSES = {
-    inf:  ['INFINITIVE', 1],
-    pres: ['PRESENT', 1],
-    ger:  ['PROGRESSIVE (-ING)', 1],
-    pret: ['PRETERITE (PAST)', 3],
-    fut:  ['FUTURE', 3],
-    part: ['PAST PARTICIPLE', 3],
-    imp:  ['IMPERFECT (PAST)', 5],
-    cond: ['CONDITIONAL', 5],
-    subj: ['PRESENT SUBJUNCTIVE', 5],
-    cmd:  ['COMMAND (TÚ)', 5],
+    inf:  ['INFINITIVE', 0],
+    pres: ['PRESENT', 0],
+    ger:  ['PROGRESSIVE (-ING)', 0],
+    pret: ['PRETERITE (PAST)', 1],
+    fut:  ['FUTURE', 1],
+    part: ['PAST PARTICIPLE', 1],
+    imp:  ['IMPERFECT (PAST)', 2],
+    cond: ['CONDITIONAL', 2],
+    subj: ['PRESENT SUBJUNCTIVE', 2],
+    cmd:  ['COMMAND (TÚ)', 2],
   };
   // English example under the label, with "verb" standing in for the verb: "they verbed"
   const WHO = ['I','you','he/she','we','they'];
@@ -64,6 +64,16 @@ window.CARGO_MODE = (function(){
     poner:['put','puts','put','put','putting'],            salir:['leave','leaves','left','left','leaving'],
     dormir:['sleep','sleeps','slept','slept','sleeping'],  pedir:['ask for','asks for','asked for','asked for','asking for'],
     ver:['see','sees','saw','seen','seeing'],
+    cantar:['sing','sings','sang','sung','singing'],       bailar:['dance','dances','danced','danced','dancing'],
+    beber:['drink','drinks','drank','drunk','drinking'],   escribir:['write','writes','wrote','written','writing'],
+    leer:['read','reads','read','read','reading'],         vender:['sell','sells','sold','sold','selling'],
+    perder:['lose','loses','lost','lost','losing'],        sacar:['take out','takes out','took out','taken out','taking out'],
+    dar:['give','gives','gave','given','giving'],          haber:['have','has','had','had','having'],
+    traer:['bring','brings','brought','brought','bringing'], caer:['fall','falls','fell','fallen','falling'],
+    creer:['believe','believes','believed','believed','believing'], conocer:['know','knows','knew','known','knowing'],
+    conducir:['drive','drives','drove','driven','driving'], pensar:['think','thinks','thought','thought','thinking'],
+    pasar:['pass','passes','passed','passed','passing'],   deber:['owe','owes','owed','owed','owing'],
+    hallar:['find','finds','found','found','finding'],     correr:['run','runs','ran','run','running'],
   };
   const AM=['am','are','is','are','are'], WAS=['was','were','was','were','were'];
   function english(inf, tense, ps){
@@ -87,38 +97,67 @@ window.CARGO_MODE = (function(){
   };
   const FUT = ['é','ás','á','emos','án'], COND = ['ía','ías','ía','íamos','ían'];
 
-  // from: first sector the verb appears. Anything not given follows the regular pattern:
+  // Anything not given follows the regular pattern:
   // full arrays (pres, pret, imp, subj) or yo (present yo only), futStem, ger, part, cmd (null = none).
   const VERBS = {
-    hablar: {from:1},
-    comer:  {from:1},
-    vivir:  {from:1},
-    tener:  {from:1, pres:['tengo','tienes','tiene','tenemos','tienen'], pret:['tuve','tuviste','tuvo','tuvimos','tuvieron'], futStem:'tendr', cmd:'ten'},
-    ser:    {from:1, pres:['soy','eres','es','somos','son'], pret:['fui','fuiste','fue','fuimos','fueron'], imp:['era','eras','era','éramos','eran'],
+    hablar: {},
+    comer:  {},
+    vivir:  {},
+    tener:  {pres:['tengo','tienes','tiene','tenemos','tienen'], pret:['tuve','tuviste','tuvo','tuvimos','tuvieron'], futStem:'tendr', cmd:'ten'},
+    ser:    {pres:['soy','eres','es','somos','son'], pret:['fui','fuiste','fue','fuimos','fueron'], imp:['era','eras','era','éramos','eran'],
              subj:['sea','seas','sea','seamos','sean'], ger:'siendo', cmd:'sé'},
-    ir:     {from:1, pres:['voy','vas','va','vamos','van'], pret:['fui','fuiste','fue','fuimos','fueron'], imp:['iba','ibas','iba','íbamos','iban'],
+    ir:     {pres:['voy','vas','va','vamos','van'], pret:['fui','fuiste','fue','fuimos','fueron'], imp:['iba','ibas','iba','íbamos','iban'],
              subj:['vaya','vayas','vaya','vayamos','vayan'], ger:'yendo', cmd:'ve'},
-    hacer:  {from:3, yo:'hago', pret:['hice','hiciste','hizo','hicimos','hicieron'], futStem:'har', part:'hecho', cmd:'haz'},
-    poder:  {from:3, pres:['puedo','puedes','puede','podemos','pueden'], pret:['pude','pudiste','pudo','pudimos','pudieron'], futStem:'podr',
+    hacer:  {yo:'hago', pret:['hice','hiciste','hizo','hicimos','hicieron'], futStem:'har', part:'hecho', cmd:'haz'},
+    poder:  {pres:['puedo','puedes','puede','podemos','pueden'], pret:['pude','pudiste','pudo','pudimos','pudieron'], futStem:'podr',
              subj:['pueda','puedas','pueda','podamos','puedan'], ger:'pudiendo', cmd:null},
-    querer: {from:3, pres:['quiero','quieres','quiere','queremos','quieren'], pret:['quise','quisiste','quiso','quisimos','quisieron'], futStem:'querr',
+    querer: {pres:['quiero','quieres','quiere','queremos','quieren'], pret:['quise','quisiste','quiso','quisimos','quisieron'], futStem:'querr',
              subj:['quiera','quieras','quiera','queramos','quieran'], cmd:null},
-    decir:  {from:3, pres:['digo','dices','dice','decimos','dicen'], pret:['dije','dijiste','dijo','dijimos','dijeron'], futStem:'dir',
+    decir:  {pres:['digo','dices','dice','decimos','dicen'], pret:['dije','dijiste','dijo','dijimos','dijeron'], futStem:'dir',
              ger:'diciendo', part:'dicho', cmd:'di'},
-    venir:  {from:3, pres:['vengo','vienes','viene','venimos','vienen'], pret:['vine','viniste','vino','vinimos','vinieron'], futStem:'vendr',
+    venir:  {pres:['vengo','vienes','viene','venimos','vienen'], pret:['vine','viniste','vino','vinimos','vinieron'], futStem:'vendr',
              ger:'viniendo', cmd:'ven'},
-    estar:  {from:3, pres:['estoy','estás','está','estamos','están'], pret:['estuve','estuviste','estuvo','estuvimos','estuvieron'],
+    estar:  {pres:['estoy','estás','está','estamos','están'], pret:['estuve','estuviste','estuvo','estuvimos','estuvieron'],
              subj:['esté','estés','esté','estemos','estén']},
-    saber:  {from:5, yo:'sé', pret:['supe','supiste','supo','supimos','supieron'], futStem:'sabr', subj:['sepa','sepas','sepa','sepamos','sepan']},
-    poner:  {from:5, yo:'pongo', pret:['puse','pusiste','puso','pusimos','pusieron'], futStem:'pondr', part:'puesto', cmd:'pon'},
-    salir:  {from:5, yo:'salgo', futStem:'saldr', cmd:'sal'},
-    dormir: {from:5, pres:['duermo','duermes','duerme','dormimos','duermen'], pret:['dormí','dormiste','durmió','dormimos','durmieron'],
+    saber:  {yo:'sé', pret:['supe','supiste','supo','supimos','supieron'], futStem:'sabr', subj:['sepa','sepas','sepa','sepamos','sepan']},
+    poner:  {yo:'pongo', pret:['puse','pusiste','puso','pusimos','pusieron'], futStem:'pondr', part:'puesto', cmd:'pon'},
+    salir:  {yo:'salgo', futStem:'saldr', cmd:'sal'},
+    dormir: {pres:['duermo','duermes','duerme','dormimos','duermen'], pret:['dormí','dormiste','durmió','dormimos','durmieron'],
              subj:['duerma','duermas','duerma','durmamos','duerman'], ger:'durmiendo'},
-    pedir:  {from:5, pres:['pido','pides','pide','pedimos','piden'], pret:['pedí','pediste','pidió','pedimos','pidieron'],
+    pedir:  {pres:['pido','pides','pide','pedimos','piden'], pret:['pedí','pediste','pidió','pedimos','pidieron'],
              subj:['pida','pidas','pida','pidamos','pidan'], ger:'pidiendo'},
-    ver:    {from:5, pres:['veo','ves','ve','vemos','ven'], pret:['vi','viste','vio','vimos','vieron'], imp:['veía','veías','veía','veíamos','veían'],
+    ver:    {pres:['veo','ves','ve','vemos','ven'], pret:['vi','viste','vio','vimos','vieron'], imp:['veía','veías','veía','veíamos','veían'],
              subj:['vea','veas','vea','veamos','vean'], ger:'viendo', part:'visto'},
+    cantar: {}, bailar: {}, beber: {}, vender: {},
+    escribir: {part:'escrito'},
+    leer:   {pret:['leí','leíste','leyó','leímos','leyeron'], ger:'leyendo', part:'leído'},
+    perder: {pres:['pierdo','pierdes','pierde','perdemos','pierden'], subj:['pierda','pierdas','pierda','perdamos','pierdan']},
+    sacar:  {pret:['saqué','sacaste','sacó','sacamos','sacaron'], subj:['saque','saques','saque','saquemos','saquen']},
+    dar:    {pres:['doy','das','da','damos','dan'], pret:['di','diste','dio','dimos','dieron'], subj:['dé','des','dé','demos','den']},
+    haber:  {pres:['he','has','ha','hemos','han'], pret:['hube','hubiste','hubo','hubimos','hubieron'], futStem:'habr',
+             subj:['haya','hayas','haya','hayamos','hayan'], cmd:null},
+    traer:  {yo:'traigo', pret:['traje','trajiste','trajo','trajimos','trajeron'], ger:'trayendo', part:'traído'},
+    caer:   {yo:'caigo', pret:['caí','caíste','cayó','caímos','cayeron'], ger:'cayendo', part:'caído'},
+    creer:  {pret:['creí','creíste','creyó','creímos','creyeron'], ger:'creyendo', part:'creído'},
+    conocer:{yo:'conozco'},
+    conducir:{yo:'conduzco', pret:['conduje','condujiste','condujo','condujimos','condujeron']},
+    pensar: {pres:['pienso','piensas','piensa','pensamos','piensan'], subj:['piense','pienses','piense','pensemos','piensen']},
+    pasar: {}, deber: {}, hallar: {}, correr: {},
   };
+  // Which verbs go on the barrels together. Learning: plain verbs with stems that look nothing alike.
+  // Gets it: one stem changes. Invested: one changes past recognition (ser: fue, era; ir: iba, vaya).
+  // Deciding and committed: one or two look-alike pairs (pude/puse). Impressive on: a whole family of
+  // look-alike stems (vino, vio, vendió, vivió). Near misses: a look-alike of a barrel's verb.
+  const STARTERS = ['hablar','comer','vivir','tener','cantar','bailar','beber','escribir'];
+  const CHANGERS = ['tener','hacer','querer','poder','decir','venir','perder','dormir','pedir','estar'];
+  const SUPPLETIVE = ['ser','ir'];
+  const PAIRS = [['poder','poner'],['ser','estar'],['ir','ver'],['venir','ver'],['venir','vender'],['saber','salir'],
+                 ['tener','traer'],['decir','dar'],['hacer','haber'],['caer','traer'],['creer','leer'],['conocer','conducir'],
+                 ['pedir','perder'],['vivir','ver'],['ser','saber'],['ir','ser'],['sacar','saber'],
+                 ['pensar','perder'],['comer','correr'],['decir','deber'],['hablar','hallar']];
+  const FAMILIES = [['venir','ver','vender','vivir'], ['saber','salir','sacar','ser'], ['poner','poder','pedir','perder','pensar','pasar'],
+                    ['tener','traer','caer','creer','leer'], ['hacer','haber','hablar','hallar'], ['conocer','conducir','comer','correr'],
+                    ['ir','ver','ser','estar'], ['decir','dar','dormir','deber']];
 
   // Every form of one verb as [text, tense, person|null].
   function conjugate(inf, v){
@@ -168,12 +207,45 @@ window.CARGO_MODE = (function(){
       const desc = [...groups.values()].map(({ps, names})=>
         names.join(' OR ') + (ps.length ? ' · ' + personText(ps) : '')).join('  OR  ');
       const examples = [...byTense].map(([tense, ps])=> '"' + example(tense, ps) + '"').join(' / ');
-      // a form shows up once every tense it can be read as has appeared
+      // a form shows up once any tense it can be read as has appeared
       const from = Math.min(...[...byTense.keys()].map(k=>TENSES[k][1]));
       DESC[text] = desc + '\n' + examples;
       TRANS[text] = [...new Set([...byTense].map(([tense, ps])=> english(inf, tense, ps)))].join(' / ');
       return {text, from};
     });
+  }
+
+  const shuffle = a => a.slice().sort(()=>Math.random()-0.5);
+  const pairedWith = v => PAIRS.filter(p=>p.includes(v)).map(p=>p[0]===v ? p[1] : p[0]);
+  function planSector(sector, band){
+    let verbs = [];
+    const add = v => { if(v && !verbs.includes(v)) verbs.push(v); };
+    const addPair = () => {
+      for(let t=0;t<30;t++){ const p=choice(PAIRS); if(p.every(v=>!verbs.includes(v))){ p.forEach(add); return; } }
+    };
+    const apart = v => !pairedWith(v).some(x=>verbs.includes(x));
+    if(band.i>=5){
+      shuffle(choice(FAMILIES)).slice(0,4).forEach(add);
+    } else if(band.i>=3){
+      addPair(); if(band.i===4) addPair();
+    } else if(band.i===2){
+      add(choice(SUPPLETIVE)); add(choice(CHANGERS.filter(apart)));
+    } else if(band.i===1){
+      add(choice(CHANGERS));
+    }
+    const fill = band.i===0 ? STARTERS : band.i<=2 ? STARTERS.concat(CHANGERS) : Object.keys(VERBS);
+    for(const v of shuffle(fill)){ if(verbs.length>=4) break; if(band.i>=3 || apart(v)) add(v); }
+    let decoys = [];
+    if(band.i>=3){
+      decoys = [...new Set(verbs.flatMap(pairedWith))].filter(v=>!verbs.includes(v));
+      if(band.i>=5) FAMILIES.forEach(f=>{ if(verbs.every(v=>f.includes(v))) f.forEach(v=>{ if(!verbs.includes(v)) decoys.push(v); }); });
+      // nothing left over: any verb that starts like one on the barrels, or else ends like one (deber, beber)
+      const like = f => Object.keys(VERBS).filter(v=>!verbs.includes(v) && verbs.some(x=>f(x)===f(v)));
+      if(!decoys.length) decoys = like(v=>v.slice(0,1));
+      if(!decoys.length) decoys = like(v=>v.slice(-3));
+      decoys = [...new Set(decoys)];
+    }
+    return {values: verbs.map(key=>({key})), decoys: decoys.map(key=>({key}))};
   }
 
   const recent = [];   // don't repeat a form for a while
@@ -183,11 +255,11 @@ window.CARGO_MODE = (function(){
     title: 'CONJUGATION SORT',
     intro: "Sort the verbs by their infinitive.",
     scanLabel: 'SPECIMEN TAG',
-    pickValue(sector){
-      return {key: choice(Object.keys(VERBS).filter(k=>sector>=VERBS[k].from))};
-    },
+    pickValue(sector){ return {key: choice(STARTERS)}; },
+    planSector,
     makeItem(value, sector, labels){
-      const all = FORMS[value.key].filter(f=>sector>=f.from).map(f=>f.text);
+      const band = CARGO_BAND(sector).i;
+      const all = FORMS[value.key].filter(f=>band>=f.from).map(f=>f.text);
       // skip forms the barrels are already showing; prefer forms not seen lately
       const fresh = all.filter(t=>!(labels||[]).includes(t));
       let pool = fresh.filter(t=>!recent.includes(t));

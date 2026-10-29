@@ -10,46 +10,122 @@
 // Matching system: rhymes. Each rock carries a word; barrels match on its rhyme family.
 // The game itself is the shared engine (../engine/engine.js); see the interface notes there.
 // Rhymes go by sound, not spelling. Early sectors keep to look-alike families (cat, hat, bat);
-// later ones mix in other spellings of the same sound (sun, one, done; blue, shoe, two). Families
-// are chosen so none rhymes with another, and words whose rhyme depends on accent are left out
-// (no "swap", "poor", "caught").
+// later ones mix in other spellings of the same sound (sun, one, done; blue, shoe, two), then put
+// "twins" side by side: families spelled alike that sound different (crown/blown, shoe/hoe, love/move).
+// Families are chosen so none rhymes with another, and words whose rhyme depends on accent are left
+// out (no "swap", "poor", "caught", "bow").
 window.CARGO_MODE = (function(){
   const choice=(arr)=>arr[Math.floor(Math.random()*arr.length)];
 
-  // from: first sector the family appears. words: [sectors 1+, 3+, 5+]
+  // words: [learning, gets it on (other spellings of the sound), invested on (longer words)]
+  // basic: one of the plain look-alike families the first sectors draw from.
   const FAMILIES = {
-    at:   {from:1, words:[['cat','hat','bat','mat','rat','sat','flat'], ['chat','splat'], ['acrobat','doormat']]},
-    ig:   {from:1, words:[['pig','big','dig','wig','fig'], ['twig','jig'], []]},
-    op:   {from:1, words:[['hop','mop','top','pop','stop'], ['drop','shop','chop'], ['lollipop','raindrop']]},
-    un:   {from:1, words:[['sun','run','fun','bun'], ['one','won','done','son'], ['none','begun']]},
-    ake:  {from:1, words:[['cake','lake','bake','rake','snake'], ['shake','make','break','steak'], ['ache','cupcake','earthquake']]},
-    ing:  {from:1, words:[['ring','sing','king','wing'], ['swing','thing','spring','string'], []]},
-    ell:  {from:1, words:[['bell','shell','smell','well','yell'], ['spell','tell'], ['hotel','seashell']]},
-    ight: {from:1, words:[['night','light','right','fight','bright'], ['kite','bite','white','write'], ['height','polite','flight']]},
-    ug:   {from:1, words:[['bug','rug','hug','mug','jug'], ['slug','plug'], ['ladybug']]},
-    ock:  {from:1, words:[['sock','rock','clock','block','lock'], ['knock'], ['shamrock']]},
-    ee:   {from:3, words:[['bee','tree','see','three','free'], ['key','sea','me','we'], ['ski','chimpanzee','referee']]},
-    air:  {from:3, words:[['bear','chair','hair','pear'], ['stair','square','where','there'], ['wear','millionaire']]},
-    oo:   {from:3, words:[['blue','shoe','two','zoo','glue'], ['flew','new','chew'], ['through','canoe','kangaroo']]},
-    own:  {from:3, words:[['crown','clown','down','town'], ['frown','brown','gown'], ['noun']]},
-    ate:  {from:5, words:[['gate','plate','late','skate'], ['eight','weight','great','straight'], ['freight']]},
-    ore:  {from:5, words:[['door','four','floor','more'], ['roar','pour','store','snore'], ['dinosaur','explore']]},
-    oat:  {from:5, words:[['boat','coat','goat','note'], ['wrote','vote','throat'], ['remote']]},
-    ed:   {from:5, words:[['bed','red','head','bread'], ['said','fed','sled','shed'], ['instead','spread']]},
+    at:   {basic:1, words:[['cat','hat','bat','mat','rat','sat','flat'], ['chat','splat'], ['acrobat','doormat']]},
+    ig:   {basic:1, words:[['pig','big','dig','wig','fig'], ['twig','jig'], []]},
+    op:   {basic:1, words:[['hop','mop','top','pop','stop'], ['drop','shop','chop'], ['lollipop','raindrop']]},
+    un:   {basic:1, words:[['sun','run','fun','bun'], ['one','won','done','son'], ['none','begun']]},
+    ake:  {basic:1, words:[['cake','lake','bake','rake','snake'], ['shake','make','break','steak'], ['ache','cupcake','earthquake']]},
+    ing:  {basic:1, words:[['ring','sing','king','wing'], ['swing','thing','spring','string'], []]},
+    ell:  {basic:1, words:[['bell','shell','smell','well','yell'], ['spell','tell'], ['hotel','seashell']]},
+    ight: {basic:1, words:[['night','light','right','fight','bright'], ['kite','bite','white','write'], ['height','polite','flight']]},
+    ug:   {basic:1, words:[['bug','rug','hug','mug','jug'], ['slug','plug'], ['ladybug']]},
+    ock:  {basic:1, words:[['sock','rock','clock','block','lock'], ['knock'], ['shamrock']]},
+    ee:   {words:[['bee','tree','see','three','free'], ['key','sea','me','we'], ['ski','chimpanzee','referee']]},
+    air:  {words:[['bear','chair','hair','pear'], ['stair','square','where','there'], ['wear','millionaire']]},
+    oo:   {words:[['blue','shoe','two','zoo','glue'], ['flew','new','chew'], ['through','canoe','kangaroo']]},
+    own:  {words:[['crown','clown','down','town'], ['frown','brown','gown'], ['noun']]},
+    ate:  {words:[['gate','plate','late','skate'], ['eight','weight','great','straight'], ['freight']]},
+    ore:  {words:[['door','four','floor','more'], ['roar','pour','store','snore'], ['dinosaur','explore']]},
+    oat:  {words:[['boat','coat','goat','note'], ['wrote','vote','throat'], ['remote']]},
+    ed:   {words:[['bed','red','head','bread'], ['said','fed','sled','shed'], ['instead','spread']]},
+    // Twins of the families above: spelled alike, sounding different (crown/blown, shoe/hoe, head/bead).
+    oan:  {words:[['bone','cone','phone','stone'], ['blown','shown','grown','thrown','known'], ['alone','trombone']]},
+    oh:   {words:[['go','no','so','toe'], ['hoe','snow','low','slow','grow','show'], ['though','dough','below']]},
+    ow:   {words:[['cow','how','now','wow'], ['brow','allow','plough','vow'], ['bough','eyebrow']]},
+    eer:  {words:[['deer','beer','cheer','steer'], ['hear','near','fear','ear','year'], ['clear','reindeer']]},
+    eed:  {words:[['seed','feed','need','weed'], ['bead','knead','plead','bleed'], ['stampede','centipede']]},
+    eet:  {words:[['feet','sheet','street','sweet'], ['meat','beat','seat','heat'], ['treat','repeat']]},
+    et:   {words:[['wet','pet','jet','net'], ['sweat','threat','debt','vet'], ['regret','upset']]},
+    uv:   {words:[['love','glove','shove'], ['above','of'], []]},
+    oov:  {words:[['move','prove','groove'], ['improve','approve','remove'], []]},
+    ohv:  {words:[['stove','drove','grove'], ['cove','wove','clove'], []]},
+    urd:  {words:[['bird','third','herd'], ['word','heard','nerd'], ['blurred','stirred']]},
+    ord:  {words:[['cord','lord','ford'], ['sword','board','chord'], ['aboard','keyboard']]},
+    ohm:  {words:[['home','dome','gnome'], ['foam','comb','roam'], ['chrome']]},
+    um:   {words:[['drum','thumb','plum','gum'], ['come','some','crumb'], ['bubblegum']]},
+    ood:  {words:[['food','mood','rude'], ['chewed','glued','brood'], ['attitude']]},
+    uud:  {words:[['good','wood','hood','stood'], ['could','would','should'], []]},
+    ud:   {words:[['mud','bud','thud','stud'], ['blood','flood'], []]},
+    uff:  {words:[['puff','cuff','fluff','stuff'], ['rough','tough','enough'], []]},
+    off:  {words:[['off','scoff'], ['cough','trough'], []]},
+    // Slant rhymes: same vowel, different ending. Kill-screen near misses only.
+    oot:  {slant:1, words:[['boot','shoot','root'], ['fruit','suit'], []]},
+    ide:  {slant:1, words:[['ride','side','tide'], ['wide','guide'], []]},
+    ape:  {slant:1, words:[['cape','tape','grape'], ['shape'], []]},
+    ap:   {slant:1, words:[['cap','map','nap'], ['tap','clap'], []]},
+    ung:  {slant:1, words:[['sung','lung','hung'], ['tongue','young'], []]},
+    eep:  {slant:1, words:[['sheep','deep','keep'], ['jeep','sleep'], []]},
   };
-  const tierFor = sector => sector>=5 ? 3 : sector>=3 ? 2 : 1;
+  // Families that share a spelling but not a sound: one barrel against the other is the trap.
+  const TWINS = [['own','oan'], ['oo','oh'], ['ow','oh'], ['air','eer'], ['ed','eed'], ['un','oan'],
+                 ['ate','eet'], ['eet','et'], ['urd','ord'], ['ohm','um'], ['uff','off'], ['ood','uud']];
+  const TRIPLES = [['uv','oov','ohv'], ['ood','uud','ud'], ['ate','eet','et'], ['oo','oh','ow']];
+  // Whole-sector clusters: every barrel and near miss shares a spelling (-ough, -ea-, -o-e, -oo-, -ow).
+  const CLUSTERS = [['uff','off','oh','oo','ow'], ['ed','eed','eet','et','ate','air','eer'], ['uv','oov','ohv','um','ohm','oan'],
+                    ['ood','uud','ud','oo'], ['ow','oh','own','oan']];
+  const SLANT = {oo:'oot', ight:'ide', ake:'ape', at:'ap', un:'ung', ee:'eep'};
+  const shuffle = a => a.slice().sort(()=>Math.random()-0.5);
+  const tierFor = band => band.i>=2 ? 3 : band.i>=1 ? 2 : 1;
+  const wordCount = (k, band) => [].concat(...FAMILIES[k].words.slice(0, tierFor(band))).length;
+  // Families a band may put on a barrel: enough words to fill one, never a slant family.
+  const usable = band => Object.keys(FAMILIES).filter(k=> !FAMILIES[k].slant && (band.i>=1 || FAMILIES[k].basic) && wordCount(k,band)>=4);
+  const twinsOf = k => TWINS.filter(p=>p.includes(k)).map(p=>p[0]===k ? p[1] : p[0]);
+  // band 0: four plain families · 1: any, no twins together · 2: one twin pair · 3: two twin pairs ·
+  // 4: a triple · 5+: one cluster. Near misses (band 3 on): twins of the barrels' families not on a
+  // barrel, then the rest of their spelling cluster; kill screens add slant rhymes.
+  function planSector(sector, band){
+    const U = usable(band);
+    let fams = [];
+    const addPair = () => {
+      for(let t=0;t<30;t++){
+        const p = shuffle(choice(TWINS));
+        if(p.every(k=>U.includes(k) && !fams.includes(k))){ fams.push(...p); return; }
+      }
+    };
+    if(band.i>=5){
+      const c = shuffle(choice(CLUSTERS)).filter(k=>U.includes(k));
+      fams = c.slice(0,4);
+    } else if(band.i===4){
+      fams = shuffle(choice(TRIPLES)).filter(k=>U.includes(k));
+    } else if(band.i>=2){
+      addPair(); if(band.i===3) addPair();
+    }
+    // fill up, keeping twins apart unless the band asked for them
+    for(const k of shuffle(U)){
+      if(fams.length>=4) break;
+      if(fams.includes(k) || (band.i<=1 && twinsOf(k).some(t=>fams.includes(t)))) continue;
+      fams.push(k);
+    }
+    let decoys = [];
+    if(band.i>=3){
+      decoys = [...new Set(fams.flatMap(twinsOf))].filter(k=>!fams.includes(k));
+      // then the rest of any spelling cluster the barrels share
+      CLUSTERS.forEach(c=>{ if(fams.filter(k=>c.includes(k)).length>=2) decoys.push(...c.filter(k=>!fams.includes(k))); });
+      if(band.i>=6) fams.forEach(k=>{ if(SLANT[k]) decoys.push(SLANT[k]); });
+      decoys = [...new Set(decoys)];
+    }
+    return {values: fams.map(key=>({key})), decoys: decoys.map(key=>({key}))};
+  }
   const recent = [];   // don't repeat a word for a while
-
   return {
     id: 'rhymes',
     title: 'RHYME SORT',
     intro: "Sort the words by their rhyme.",
     scanLabel: 'SPECIMEN TAG',
-    pickValue(sector){
-      return {key: choice(Object.keys(FAMILIES).filter(k=>sector>=FAMILIES[k].from))};
-    },
+    pickValue(sector){ return {key: choice(usable(CARGO_BAND(sector)))}; },
+    planSector,
     makeItem(value, sector, labels){
-      const all = [].concat(...FAMILIES[value.key].words.slice(0, tierFor(sector)));
+      const all = [].concat(...FAMILIES[value.key].words.slice(0, tierFor(CARGO_BAND(sector))));
       // a word never rhymes with itself, so skip the barrel labels; prefer words not seen lately
       const fresh = all.filter(w=>!(labels||[]).includes(w));
       let pool = fresh.filter(w=>!recent.includes(w));

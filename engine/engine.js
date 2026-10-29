@@ -9,6 +9,8 @@
 //                         "Sort the <things> by their <property>." (everything else is left to discover)
 //   scanLabel             caption over the scanner readout
 //   pickValue(sector)     a random value for this sector: any plain object with a `key`
+//   planSector(sector, band)  optional; the sector's manifest {values, decoys}: the four values the
+//                         barrels should hold, and near misses that belong in none of them (see pickSpawnValue)
 //   makeItem(value, sector, labels)  how one rock shows that value: {rep, text, glyph?}
 //                         (labels: texts the barrels are showing right now)
 //   same(a, b)            optional; values match (default: same key)
@@ -956,6 +958,8 @@ const state={
   // Robot arm: one job at a time; sealed barrels wait in `queue` (barrel indices, FIFO).
   arm:{queue:[], job:null, door:0, shY:0, wrist:null, carrying:-1, side:1, fk:null},
   rocks:[],
+  // This sector's manifest from the protocol: {values, decoys} (see pickSpawnValue).
+  plan:null,
   aliens:[],
   alienSpawnedThisSector:false,
   alienCloneCounters:{},
@@ -1042,12 +1046,48 @@ function makeCraters(size){
   }
   return c;
 }
+// ---- Difficulty ----
+// Difficulty is ambiguity, never a shortage: every rock either fits an open barrel (or the barrel the
+// sector's manifest has lined up for an empty one), or from sector 9 on is a deliberate near miss that
+// belongs in none of them (8/9 against 7/8, "hoe" against "shoe"). The protocol picks the manifest to be
+// as confusable as the band calls for; the bands follow the player's arc:
+//   0: sectors 1-2 learning · 1: 3-5 gets it · 2: 6-8 invested · 3: 9-14 deciding · 4: 15-19 committed
+//   5: 20-29 impressive · 6: 30+ kill screens, tightening every sector (kill = sectors past 29)
+function sectorBand(sector){
+  const i = sector>=30 ? 6 : sector>=20 ? 5 : sector>=15 ? 4 : sector>=9 ? 3 : sector>=6 ? 2 : sector>=3 ? 1 : 0;
+  return {i, kill: Math.max(0, sector-29)};
+}
+window.CARGO_BAND = sectorBand;   // protocols size their own content by it
+// Share of new rocks that are near misses, once every open barrel has its value.
+function decoyRate(sector){
+  const b=sectorBand(sector);
+  return [0, 0, 0, 0.10, 0.15, 0.20, Math.min(0.30, 0.20+0.01*b.kill)][b.i];
+}
+function planSector(sector){
+  state.plan = MODE.planSector ? MODE.planSector(sector, sectorBand(sector)) : null;
+}
 function pickSpawnValue(){
-  const armed = state.barrels.filter(b=>b.value && !b.sealed).map(b=>b.value);
-  if(armed.length && Math.random()<0.5){
-    return choice(armed);
-  }
-  return MODE.pickValue(state.sector);
+  const plan=state.plan;
+  if(!plan) return MODE.pickValue(state.sector);
+  const has=(list,v)=>list.some(x=>sameValue(x,v));
+  const open=state.barrels.filter(b=>!b.sealed);
+  const armed=open.filter(b=>b.value).map(b=>b.value);
+  const sealed=state.barrels.filter(b=>b.sealed && b.value).map(b=>b.value);
+  const empties=open.length-armed.length;
+  // what the open barrels hold, plus (while one is empty) the manifest values nobody holds yet
+  let wanted=armed.slice();
+  if(empties>0) wanted=wanted.concat(plan.values.filter(v=>!has(armed,v) && !has(sealed,v)));
+  if(!wanted.length) wanted=plan.values.filter(v=>!has(sealed,v));
+  if(!wanted.length) return MODE.pickValue(state.sector);
+  // a near miss only once there's no empty barrel it could rightly open
+  const decoys=(plan.decoys||[]).filter(v=>!has(armed,v) && !has(wanted,v));
+  if(empties===0 && decoys.length && Math.random()<decoyRate(state.sector)) return choice(decoys);
+  // whatever is scarcest in the bay comes next
+  const loose=state.rocks.filter(r=>r.state==='floating' || r.state==='settled');
+  const w=wanted.map(v=>1/(1+loose.filter(r=>sameValue(r.value,v)).length));
+  let t=Math.random()*w.reduce((a,b)=>a+b,0);
+  for(let i=0;i<wanted.length;i++){ t-=w[i]; if(t<=0) return wanted[i]; }
+  return wanted[wanted.length-1];
 }
 // `item` (optional): keep a rock's existing look ({rep, text, glyph}) instead of rolling a new one.
 function createRock(value, item){
@@ -1809,6 +1849,7 @@ function startLevel(sector, riseBarrels){
   resetArm();
   updateBarrelDots();
   state.rocks=[];
+  planSector(sector);
   state.alienSpawnedThisSector=false;
   state.spawnTimer=0;
   for(let i=0;i<4;i++) trySpawnRandom();
@@ -3513,7 +3554,8 @@ function pressRedButton(){
 
 // Every rock that goes into a barrel (not one bouncing off a sealed lid) is remembered for the display
 // under the score: the rock, the label of the barrel it went in, and after a mismatch the label of a
-// barrel it did belong in (null: none was out, so an empty barrel). Called before the barrel changes.
+// barrel it did belong in (null: none was out, so an empty barrel; {out:true}: a near miss that fits no
+// barrel and should have gone back out of the iris). Called before the barrel changes.
 function noteDrop(idx, r){
   const barrel=state.barrels[idx];
   const label=b=>({text:b.text, glyph:b.glyph||null});
@@ -3523,6 +3565,7 @@ function noteDrop(idx, r){
     const fits = state.barrels.filter((b,j)=> j!==idx && b.value && sameValue(b.value, r.value));
     const best = fits.find(b=>b.status==='ready' && !b.sealed) || fits[0];
     if(best) right=label(best);
+    else if(!state.barrels.some((b,j)=> j!==idx && !b.sealed && !b.value)) right={out:true};
   }
   state.lastDrop = {ok, t:state.t, rock:{text:r.text, glyph:r.glyph||null},
     chosen: barrel.value ? label(barrel) : {text:r.text, glyph:r.glyph||null}, right};
@@ -3597,6 +3640,15 @@ function sealBarrel(idx){
   updateBarrelDots();
   addScore(SEAL_POINTS);
   queueArmRetrieval(idx);
+  // Rocks still floating with this value have nowhere to go now, so they drift back out of the iris.
+  if(!state.barrels.some(b=>!b.sealed && b.value && sameValue(b.value, barrel.value))){
+    const iris=layout.iris;
+    state.rocks.forEach(r=>{
+      if(r.state!=='floating' || !sameValue(r.value, barrel.value)) return;
+      const dx=r.x-iris.cx, dy=r.y-iris.cy, d=Math.hypot(dx,dy)||1;
+      r.state='ejected'; r.evx=dx/d*60; r.evy=dy/d*60-20; r.opacity=1;
+    });
+  }
   // The sector change waits until the arm has taken every barrel away (see updateArm).
 }
 
@@ -5342,8 +5394,9 @@ function dropBox(cls, item, tag){
       if(drawn) box.appendChild(cv);
     }
   }
-  if(!drawn) box.textContent = item ? item.text : 'EMPTY BARREL';
-  if(!item) box.classList.add('empty');
+  const out = item && item.out;
+  if(!drawn) box.textContent = out ? 'THROW IT BACK OUT' : item ? item.text : 'EMPTY BARREL';
+  if(!item || out) box.classList.add('empty');
   wrap.appendChild(box);
   const en = item && MODE.translate ? MODE.translate(item.text) : '';
   if(en){ const e=document.createElement('div'); e.className='en'; e.textContent=en; wrap.appendChild(e); }
@@ -5366,7 +5419,7 @@ function openDropDialog(){
   const chosen=dropBox('ddHolo', d.chosen, d.ok ? '' : 'YOU CHOSE');
   if(!d.ok) chosen.querySelector('.ddHolo').classList.add('wrong');
   dests.appendChild(chosen);
-  if(!d.ok) dests.appendChild(dropBox('ddHolo', d.right, 'BELONGS WITH'));
+  if(!d.ok) dests.appendChild(dropBox('ddHolo', d.right, d.right && d.right.out ? 'NO BARREL FITS' : 'BELONGS WITH'));
   dia.appendChild(dests);
   document.getElementById('dropDialog').classList.remove('hidden');
   // arrows once the boxes have their sizes: from the rock's right edge to each label's left edge
@@ -5999,7 +6052,7 @@ const SaveGame = (()=>{
       lastDrop:state.lastDrop && Object.assign({}, state.lastDrop, {t:null}),
       score:state.score, streak:state.streak, roster:state.roster.filter(m=>!state.aliens.some(a=>a.id===m.id && (a.state==='launching' || a.state==='spaced'))),
       irisOpen:state.irisOpen, irisTarget:state.irisTarget, leverDown:state.leverDown,
-      nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector,
+      nebulaHue:state.nebulaHue, alienSpawnedThisSector:state.alienSpawnedThisSector, plan:state.plan,
       alienCloneCounters:state.alienCloneCounters,
       barrels:state.barrels.map(b=>({value:b.value, text:b.text, glyph:b.glyph, items:b.items, slots:b.slots, sealed:b.sealed,
         fillDisplay:b.fillDisplay, status:b.status, door:b.door, riseT:b.riseT, destroyT:b.destroyT||0})),
@@ -6060,6 +6113,7 @@ function restoreGame(d){
   syncDamageMarks(); paintBackground();
   state.irisOpen=d.irisOpen; state.irisTarget=d.irisTarget; state.leverDown=!!d.leverDown;
   state.nebulaHue=d.nebulaHue; state.nebulaBlobs=makeNebula(state.nebulaHue);
+  if(d.plan && d.plan.values) state.plan=d.plan; else planSector(d.sector);
   state.alienSpawnedThisSector=!!d.alienSpawnedThisSector;
   state.alienCloneCounters=d.alienCloneCounters||{};
   state.particles=[]; state.rocks=[]; state.held=null; state.breaching=false; state.transition=null;
