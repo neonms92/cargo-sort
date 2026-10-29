@@ -245,7 +245,10 @@ window.CARGO_MODE = (function(){
     title: 'CONJUGATION SORT',
     intro: "Sort the verbs by their infinitive.",
     scanLabel: 'SPECIMEN TAG',
-    pickValue(sector){ return {key: choice(STARTERS)}; },
+    pickValue(sector){
+      const b = CARGO_BAND(sector).i;
+      return {key: choice(b===0 ? STARTERS : b===1 ? STARTERS.concat(CHANGERS) : b===2 ? STARTERS.concat(CHANGERS, SUPPLETIVE) : Object.keys(VERBS))};
+    },
     planSector,
     makeItem(value, sector, labels){
       const band = CARGO_BAND(sector).i;

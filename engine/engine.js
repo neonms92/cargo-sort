@@ -1053,8 +1053,7 @@ function makeCraters(size){
   return c;
 }
 // ---- Difficulty ----
-// Difficulty is ambiguity, never a shortage: every rock fits an open barrel (or the barrel the sector's
-// manifest has lined up for an empty one). The lever is similarity: the protocol picks the manifest's
+// Difficulty is ambiguity, and the lever is similarity: the protocol picks the manifest's
 // values to be more alike as the bands go on (7/8 beside 8/9, "shoe" beside "hoe"). The bands follow
 // the player's arc:
 //   0: sectors 1-2 learning · 1: 3-5 gets it · 2: 6-8 invested · 3: 9-14 deciding · 4: 15-19 committed
@@ -1067,25 +1066,23 @@ window.CARGO_BAND = sectorBand;   // protocols size their own content by it
 function planSector(sector){
   state.plan = MODE.planSector ? MODE.planSector(sector, sectorBand(sector)) : null;
 }
+// Half the rocks match a barrel that's open and labelled; the other half match none of them, to be set
+// aside for a barrel that opens later. Those come from the manifest values no barrel holds yet, so the
+// barrels end up as alike as the band asks, and once the manifest is all in use, from the band's pool.
 function pickSpawnValue(){
-  const plan=state.plan;
-  if(!plan) return MODE.pickValue(state.sector);
   const has=(list,v)=>list.some(x=>sameValue(x,v));
-  const open=state.barrels.filter(b=>!b.sealed);
-  const armed=open.filter(b=>b.value).map(b=>b.value);
+  const armed=state.barrels.filter(b=>b.value && !b.sealed).map(b=>b.value);
+  if(armed.length && Math.random()<0.5){
+    // whatever is scarcest in the bay comes next
+    const loose=state.rocks.filter(r=>r.state==='floating' || r.state==='settled');
+    const w=armed.map(v=>1/(1+loose.filter(r=>sameValue(r.value,v)).length));
+    let t=Math.random()*w.reduce((a,b)=>a+b,0);
+    for(let i=0;i<armed.length;i++){ t-=w[i]; if(t<=0) return armed[i]; }
+    return armed[armed.length-1];
+  }
   const sealed=state.barrels.filter(b=>b.sealed && b.value).map(b=>b.value);
-  const empties=open.length-armed.length;
-  // what the open barrels hold, plus (while one is empty) the manifest values nobody holds yet
-  let wanted=armed.slice();
-  if(empties>0) wanted=wanted.concat(plan.values.filter(v=>!has(armed,v) && !has(sealed,v)));
-  if(!wanted.length) wanted=plan.values.filter(v=>!has(sealed,v));
-  if(!wanted.length) return MODE.pickValue(state.sector);
-  // whatever is scarcest in the bay comes next
-  const loose=state.rocks.filter(r=>r.state==='floating' || r.state==='settled');
-  const w=wanted.map(v=>1/(1+loose.filter(r=>sameValue(r.value,v)).length));
-  let t=Math.random()*w.reduce((a,b)=>a+b,0);
-  for(let i=0;i<wanted.length;i++){ t-=w[i]; if(t<=0) return wanted[i]; }
-  return wanted[wanted.length-1];
+  const unheld=state.plan ? state.plan.values.filter(v=>!has(armed,v) && !has(sealed,v)) : [];
+  return unheld.length ? choice(unheld) : MODE.pickValue(state.sector);
 }
 // `item` (optional): keep a rock's existing look ({rep, text, glyph}) instead of rolling a new one.
 function createRock(value, item){
@@ -3643,15 +3640,6 @@ function sealBarrel(idx){
   updateBarrelDots();
   addScore(SEAL_POINTS);
   queueArmRetrieval(idx);
-  // Rocks still floating with this value have nowhere to go now, so they drift back out of the iris.
-  if(!state.barrels.some(b=>!b.sealed && b.value && sameValue(b.value, barrel.value))){
-    const iris=layout.iris;
-    state.rocks.forEach(r=>{
-      if(r.state!=='floating' || !sameValue(r.value, barrel.value)) return;
-      const dx=r.x-iris.cx, dy=r.y-iris.cy, d=Math.hypot(dx,dy)||1;
-      r.state='ejected'; r.evx=dx/d*60; r.evy=dy/d*60-20; r.opacity=1;
-    });
-  }
   // The sector change waits until the arm has taken every barrel away (see updateArm).
 }
 

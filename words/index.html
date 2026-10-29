@@ -139,7 +139,7 @@ window.CARGO_MODE = (function(){
     title: 'WORD SORT',
     intro: "Sort the words by their type.",
     scanLabel: 'SPECIMEN TAG',
-    pickValue(sector){ return {key: choice(CORE)}; },
+    pickValue(sector){ return {key: choice(CARGO_BAND(sector).i>=2 ? ALL : CORE)}; },
     planSector,
     makeItem(value, sector, labels){
       const all = poolFor(value.key, sector);
