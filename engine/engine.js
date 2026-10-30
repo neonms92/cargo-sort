@@ -1635,6 +1635,24 @@ function alienWalkStep(a, baseSpeed, dt){
   if(a.walkDistLeft <= 0) rollAlienWalkSpeed(a);
   return d;
 }
+// Unclumping: a walker overlapping another going the same way on the same track gets a small
+// nudge, faster if it's the one in front and slower if it's behind, so they drift apart.
+const ALIEN_CROWD_BOOST = 1.2, ALIEN_CROWD_DRAG = 0.8;
+function updateAlienCrowding(){
+  const walkers = state.aliens.filter(a=> a.state==='settled' && (a.walkPhase==='track1' || a.walkPhase==='track2'));
+  for(const a of walkers){
+    a.crowdMult = 1;
+    const dir = (a.walkPhase==='track1') === !a.walksReverse ? 1 : -1;
+    for(const b of walkers){
+      if(b===a || b.walkPhase!==a.walkPhase || b.walksReverse!==a.walksReverse) continue;
+      const dx = (a.baseX - b.baseX)*dir;
+      if(Math.abs(dx) >= (a.size*a.scale + b.size*b.scale)*0.9) continue;
+      // exact ties (rare) split by roster order so one of them still leads
+      a.crowdMult = (dx>0 || (dx===0 && state.aliens.indexOf(a)<state.aliens.indexOf(b))) ? ALIEN_CROWD_BOOST : ALIEN_CROWD_DRAG;
+      break;
+    }
+  }
+}
 const ALIEN_CLIMB_FALL_MESSAGES=[
   "Ahh!",
   "Catch me!",
@@ -4266,6 +4284,7 @@ function update(){
   }
   state.rocks = state.rocks.filter(r=> !(r.state==='ejected' && (r.opacity<=0.03 || r.scale<=0.06)) && r.state!=='gone');
 
+  updateAlienCrowding();
   for(const a of state.aliens){
     a.blinkT -= dt;
     if(a.blinkT<0) a.blinkT = Math.random()<0.2 ? ALIEN_BLINK_SECONDS+0.12 : rand(2,6);   // now and then a double blink
@@ -4352,7 +4371,7 @@ function update(){
       if(a.walkPhase==='track1'){
         a.scale = lerp(a.scale, a.targetScale, Math.min(1,dt*3));
         const prevX = a.baseX;
-        a.baseX += alienWalkStep(a, ALIEN_TRACK1_SPEED, dt)*(a.walksReverse?-1:1);
+        a.baseX += alienWalkStep(a, ALIEN_TRACK1_SPEED*(a.crowdMult||1), dt)*(a.walksReverse?-1:1);
         a.baseY = layout.floorBottom - a.size*0.4;
         a.x = a.baseX;
         a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
@@ -4452,7 +4471,7 @@ function update(){
         // waiting silently inside its chosen barrel until a rock is dropped in — see handleBarrelDrop
       } else if(a.walkPhase==='track2'){
         const prevX = a.baseX;
-        a.baseX += alienWalkStep(a, ALIEN_TRACK2_SPEED, dt)*(a.walksReverse?1:-1);
+        a.baseX += alienWalkStep(a, ALIEN_TRACK2_SPEED*(a.crowdMult||1), dt)*(a.walksReverse?1:-1);
         a.baseY = layout.floorTop;
         a.x = a.baseX;
         a.y = a.baseY + Math.sin(state.t*1.0+a.phase)*0.7;
@@ -4675,8 +4694,27 @@ function drawShippingLabel(cx, cy, w, h, rot){
   LABEL_BARS.forEach((on,i)=>{ if(on) ctx.fillRect(x0+w*0.07+i*bw, by, bw*0.75, bh); });
   ctx.restore();
 }
-function drawAlienList(list){
-  const sorted = list.slice().sort((a,b)=> (a.scale-b.scale) || (alienStackLevel(a)-alienStackLevel(b)));
+// Each tower (base, riders and any rock one of them carries) draws as one unit, so when two
+// overlap one whole tower is in front of the other. Towers order by depth, then by roster
+// order so the same pair always layers the same way.
+function drawAlienList(list, withCarried){
+  const groups = new Map();
+  for(const a of list){
+    const root = alienStackRoot(a), key = list.includes(root) ? root : a;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(a);
+  }
+  const order = [...groups.keys()].sort((a,b)=> (a.scale-b.scale) || (state.aliens.indexOf(a)-state.aliens.indexOf(b)));
+  for(const key of order){
+    const tower = groups.get(key).sort((a,b)=> alienStackLevel(a)-alienStackLevel(b));
+    drawAlienTower(tower);
+    if(withCarried){
+      const rocks = tower.filter(a=> a.carrying && a.carrying.state==='carried').map(a=> a.carrying);
+      if(rocks.length) drawRockList(rocks);
+    }
+  }
+}
+function drawAlienTower(sorted){
   sorted.forEach(a=>{
     const op = a.opacity!==undefined? a.opacity : 1;
     if(op<=0) return;
@@ -4779,8 +4817,10 @@ function drawBay(windowView){
   drawBarrels();
   if(state.held) drawBeams();
   drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone' && r.state!=='carried'));
-  drawAlienList(state.aliens.filter(a=> !OFF_FLOOR_ALIEN_STATES.has(a.state) && !isArmLayerAlien(a) && a.walkPhase!=='hiding' && !isFarTrackAlien(a)));
-  drawRockList(state.rocks.filter(r=>r.state==='carried'));
+  const floorAliens = state.aliens.filter(a=> !OFF_FLOOR_ALIEN_STATES.has(a.state) && !isArmLayerAlien(a) && a.walkPhase!=='hiding' && !isFarTrackAlien(a));
+  drawAlienList(floorAliens, true);
+  // a carried rock whose carrier isn't drawn with them (rare) still shows, on top as before
+  drawRockList(state.rocks.filter(r=>r.state==='carried' && !(floorAliens.includes(r.carrier) && r.carrier.carrying===r)));
   drawParticles();
   drawAlienBubbles();
 }
