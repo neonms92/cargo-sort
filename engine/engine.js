@@ -256,8 +256,10 @@ canvas{display:block; width:100%; height:100%; touch-action:none;}
 .rosterStrip::-webkit-scrollbar{display:none;}
 .rosterFace{position:relative; flex:0 0 30px; height:30px; scroll-snap-align:center; cursor:pointer; opacity:0.55;
   transition:transform .15s ease, opacity .15s ease;}
-/* the alien in its helmet, the size of the box; the canvas reaches past it for antennae */
-.rosterFace canvas{position:absolute; left:-9px; top:-9px; width:48px; height:48px; display:block;}
+/* the alien in its helmet, the size of the box; the canvas reaches past it for antennae. It lets
+   touches through to the box so a swipe that starts on a face still scrolls the strip (the bay's
+   canvas rule would otherwise block it). */
+.rosterFace canvas{position:absolute; left:-9px; top:-9px; width:48px; height:48px; display:block; pointer-events:none;}
 .rosterFace.hl{transform:scale(1.5); opacity:1;}
 .rosterName{font-family:var(--font-display); font-size:10px; letter-spacing:2px; color:var(--cyan); min-height:13px;}
 .roster.empty .rosterName{color:var(--text-dim);}
