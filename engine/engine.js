@@ -1863,7 +1863,7 @@ function startLevel(sector, riseBarrels){
     b.status = riseBarrels ? 'rising' : 'ready'; b.riseT = 0; b.door = 0;});
   resetArm();
   updateBarrelDots();
-  state.rocks=[];
+  state.rocks=state.rocks.filter(r=>CHUTE_STATES.has(r.state));   // the airlock keeps its cargo
   planSector(sector);
   state.alienSpawnedThisSector=false;
   state.spawnTimer=0;
@@ -2537,7 +2537,7 @@ function splitBay(){
   const add=(x,y,w,h,fn,spin)=>{ const s=makeSprite(x,y,w,h,fn); return addPiece(f,'img',{x:s.cx,y:s.cy},{s, layer:1, spin:spin!==undefined?spin:rand(-1,1)*0.8}); };
   // Whoever is in the airlock stays shut in it and floats off with it (see updateAdriftAirlock).
   // They're taken out of the box's own drawing so the airlock piece is drawn empty.
-  const boxed = state.aliens.filter(a=> a.state==='chute' || a.state==='launching');
+  const boxed = chuteOccupants();
   boxed.forEach(a=>{ a.state='boxed'; });
   const {cx,cy,r}=layout.iris, RR=r*1.17+4;
   add(cx-RR, cy-RR, RR*2, RR*2, ()=>{ drawIrisBlades(cx,cy,r); drawIrisRing(cx,cy,r); }, rand(-0.25,0.25));
@@ -2583,7 +2583,7 @@ function splitBay(){
   });
   barrel(2); barrel(3);
   // every rock, live
-  state.rocks.forEach(rk=>{ if(rk.state!=='gone') addPiece(f, 'rock', rk, {rock:rk, scale0:rk.scale, layer:2, spin:rand(-1.5,1.5)}); });
+  state.rocks.forEach(rk=>{ if(rk.state!=='gone' && rk.state!=='boxed') addPiece(f, 'rock', rk, {rock:rk, scale0:rk.scale, layer:2, spin:rand(-1.5,1.5)}); });
   // every alien, live; the ones off-screen start just past the edge they're nearest and drift in
   state.aliens.forEach(a=>{
     if(a.state==='gone' || a.state==='boxed') return;
@@ -2715,8 +2715,9 @@ function updateAdriftAirlock(dt){
   }
   for(const o of L) if(o.a.bubbleT>0) o.a.bubbleT=Math.max(0, o.a.bubbleT-dt);
   box.talkT-=dt;
-  if(box.talkT<=0 && L.length && !L.some(o=>o.a.bubbleT>0)){
-    const o=choice(L);
+  const voices=L.filter(o=>o.a.isAlien);
+  if(box.talkT<=0 && voices.length && !L.some(o=>o.a.bubbleT>0)){
+    const o=choice(voices);
     o.a.message = choice(L.length>=CHUTE_CROWD && Math.random()<0.4 ? ALIEN_CHUTE_CROWD_MESSAGES : ALIEN_AIRLOCK_ADRIFT_MESSAGES);
     o.a.bubbleT = 3;
     box.talkT = rand(3.5,6);
@@ -2730,8 +2731,8 @@ function drawBoxedAliens(box, px, py, s, rot){
   const cos=Math.cos(rot), sin=Math.sin(rot);
   for(const o of box.aliens){
     const a=o.a, lx=box.ox+o.x, ly=box.oy+o.y;
-    a.x=lx; a.y=ly; a.scale=ALIEN_TRACK2_SCALE; a.opacity=1;
-    drawAlienList([a]);
+    a.x=lx; a.y=ly; a.scale=chuteScaleOf(a); a.opacity=1;
+    if(a.isAlien) drawAlienList([a]); else drawRockList([a]);
     o.sx=px+(lx*cos-ly*sin)*s; o.sy=py+(lx*sin+ly*cos)*s; o.ss=s;
   }
   // the glass, in front of them again
@@ -2775,7 +2776,7 @@ function drawFailure(){
   drawParticles();
   if(f.airlock) for(const o of f.airlock.aliens){
     const a=o.a;
-    if(a.bubbleT<=0) continue;
+    if(!(a.bubbleT>0)) continue;
     ctx.save();
     ctx.globalAlpha = a.bubbleT>0.6 ? 1 : a.bubbleT/0.6;
     drawSpeechBubble(o.sx, o.sy - a.size*ALIEN_TRACK2_SCALE*o.ss - 10, a.message);
@@ -2897,7 +2898,11 @@ function localPos(e){
   return {x:cx,y:cy};
 }
 function hitRock(pos){
-  const candidates = state.rocks.filter(r=> (r.state==='floating' && state.irisOpen>0.5) || r.state==='settled' || r.state==='falling');
+  // Like aliens, airlocked rocks can be taken back out: from the box, or through the open iris.
+  const iris=layout.iris;
+  const inWindow = r=> state.irisOpen>0.5 && Math.hypot(r.x-iris.cx, r.y-iris.cy) < iris.r;
+  const candidates = state.rocks.filter(r=> (r.state==='floating' && state.irisOpen>0.5) || r.state==='settled' || r.state==='falling' ||
+    r.state==='chute' || r.state==='launching' || (r.state==='spaced' && inWindow(r)));
   candidates.sort((a,b)=> b.scale - a.scale);
   for(const r of candidates){
     const d=Math.hypot(pos.x-r.x, pos.y-r.y);
@@ -2953,6 +2958,7 @@ function onDown(e){
   const r=hitRock(pos);
   if(r){
     e.preventDefault();
+    if(CHUTE_STATES.has(r.state)){ r.opacity=1; r.chuteScale=null; }
     state.held=r;
     r.state='held';
     state.dragLast={x:pos.x,y:pos.y};
@@ -3118,6 +3124,7 @@ function alienFellOffEdge(a, side){
 }
 
 function releaseRock(r){
+  if(!chuteLaunching() && hitChute(r)){ putRockInChute(r); return; }
   const iris=layout.iris;
   const distIris = Math.hypot(r.x-iris.cx, r.y-iris.cy);
   if(distIris < iris.r*0.92 && state.irisOpen>0.75 && r.y < layout.floorTop){
@@ -3185,6 +3192,8 @@ function forceFieldRebound(a){
 // ---- Airlock chute ----
 // The only way to really get rid of aliens: drop them into the glass box on the left wall (as many
 // as you like; they tumble and pile up inside, and an overstuffed box jitters), then press LAUNCH.
+// Rocks go in the same way and out with everyone else: no points, no drop on the monitor, just cargo
+// that's no longer in the bay (like a rock thrown back out through the iris).
 // Everyone is sucked out through the outer hatch, one after another, and drifts past the iris
 // window; no more than two of them get a word in on the way. They can be grabbed back out the whole
 // time, from the box or through the window, and only leave the roster once they've drifted off.
@@ -3246,7 +3255,20 @@ const ALIEN_FAREWELL_MESSAGES=[
   "I'll write!",
   "Tell my clones I said hi!",
 ];
-function chuteOccupants(){ return state.aliens.filter(a=> a.state==='chute' || a.state==='launching'); }
+const ALIEN_CHUTE_ROCK_MESSAGES=[
+  "Hey! Watch it!",
+  "Who ordered the rock?",
+  "Ow! Was that a rock?",
+  "Great, a new roommate.",
+  "At least this one's quiet.",
+  "Now it's crowded AND rocky.",
+];
+const CHUTE_ROCK_SCALE = ALIEN_TRACK2_SCALE;   // rocks in the box sit at the same depth as the aliens
+const CHUTE_STATES = new Set(['chute','launching','spaced']);
+// Aliens and rocks alike, in the box or on their way out of it.
+function inChute(b){ return b.state==='chute' || b.state==='launching'; }
+function chuteOccupants(){ return state.aliens.filter(inChute).concat(state.rocks.filter(inChute)); }
+function chuteScaleOf(b){ return b.isAlien ? ALIEN_TRACK2_SCALE : CHUTE_ROCK_SCALE; }
 function chuteLaunching(){ return state.aliens.some(a=> a.state==='launching'); }
 function hitChute(pos){
   const c=layout.chute, m=18;
@@ -3274,22 +3296,41 @@ function putAlienInChute(a){
   a.chuteTalkT = rand(7,11);
   AudioEngine.chuteAccept();
 }
+function putRockInChute(r){
+  throwVelocity();
+  r.state='chute';
+  r.fvx=r.fvy=0;
+  const c=layout.chute, rad=chuteRadius(r);
+  r.x = clamp(r.x, c.x-c.w/2+rad, c.x+c.w/2-rad);
+  r.y = clamp(r.y, c.y-c.h/2+rad, c.y+c.h/2-rad);
+  r.cpx = r.x; r.cpy = r.y;
+  // Someone already in there has an opinion about it (one voice at a time).
+  const inside = state.aliens.filter(a=>a.state==='chute');
+  if(inside.length && !inside.some(a=>a.bubbleT>0)){
+    const a=choice(inside);
+    a.message = choice(ALIEN_CHUTE_ROCK_MESSAGES);
+    a.bubbleT = 2.5;
+    a.chuteTalkT = rand(7,11);
+  }
+  AudioEngine.chuteAccept();
+}
 // Everyone in the box goes, one after another, in a random order. Two of them (at most) get to say
 // goodbye as they pass the window; the rest go quietly.
 function launchChute(){
-  const ch=state.chute, list=state.aliens.filter(a=>a.state==='chute');
+  const ch=state.chute, list=chuteOccupants().filter(b=>b.state==='chute');
   ch.press = 0.15;
   if(!list.length){ AudioEngine.uiBlip(160); return; }
   for(let i=list.length-1;i>0;i--){ const j=randInt(0,i); [list[i],list[j]]=[list[j],list[i]]; }
-  // The first one out speaks, and so does the last, held back if need be so its line comes after the
-  // first one's is over rather than on top of it.
-  const last=list.length-1;
+  // The first alien out speaks, and so does the last, held back if need be so its line comes after
+  // the first one's is over rather than on top of it. Rocks just go.
+  const talkers=list.filter(b=>b.isAlien);
+  const first=talkers[0], last=talkers.length>1 && CHUTE_FAREWELL_MAX>1 ? talkers[talkers.length-1] : null;
   list.forEach((a,i)=>{
     a.state='launching';
     let wait = i*CHUTE_LAUNCH_STAGGER;
-    if(i===last && i>0) wait = Math.max(wait, CHUTE_SECOND_VOICE_DELAY);
+    if(a===last) wait = Math.max(wait, CHUTE_SECOND_VOICE_DELAY);
     a.launchT = -wait;   // below zero: still in the box, being pulled to the hatch
-    a.farewell = i===0 || (i===last && CHUTE_FAREWELL_MAX>1);
+    a.farewell = a===first || a===last;
     a.bubbleT=0;
   });
   ch.flash=1;
@@ -3334,9 +3375,9 @@ const CHUTE_SQUASH_KEEP = 0.75;  // share of speed a squashed occupant keeps per
 const CHUTE_MAX_STEP = 3;        // px per substep: a shove can't fling anyone through the glass
 const CHUTE_HATCH_PULL = 2600;   // px/s² towards the open hatch while waiting to go out
 let chuteAcc = 0;
-function chuteRadius(a){ return a.size*ALIEN_TRACK2_SCALE*0.95; }
+function chuteRadius(a){ return a.size*chuteScaleOf(a)*0.95; }
 function stepChutePhysics(dt){
-  const list = state.aliens.filter(a=> a.state==='chute' || (a.state==='launching' && a.launchT<0));
+  const list = chuteOccupants().filter(a=> a.state==='chute' || a.launchT<0);
   if(!list.length){ chuteAcc=0; return; }
   const c=layout.chute, x0=c.x-c.w/2, x1=c.x+c.w/2, y0=c.y-c.h/2, y1=c.y+c.h/2;
   const hx=c.x, hy=c.y-c.h*0.05;   // the outer hatch (see drawChute)
@@ -3405,12 +3446,13 @@ function stepChutePhysics(dt){
     for(const a of list) a.rot = ((a.rot||0) + (a.x-a.cpx)/chuteRadius(a)) % TAU;
   }
 }
-function updateChuteAlien(a, dt){
+function updateChuteBody(a, dt){
   const c=layout.chute;
   if(a.state==='chute'){
     // The chute is on the wall above track 2, so its occupants are drawn at track 2's depth.
-    a.scale = lerp(a.scale, ALIEN_TRACK2_SCALE, Math.min(1, dt*6));
+    a.scale = lerp(a.scale, chuteScaleOf(a), Math.min(1, dt*6));
     a.baseX=a.x; a.baseY=a.y;
+    if(!a.isAlien) return;
     a.chuteTalkT -= dt;
     // One voice at a time in there; a crowded box complains about the crowd.
     if(a.chuteTalkT<=0 && a.bubbleT<=0){
@@ -3437,7 +3479,7 @@ function updateChuteAlien(a, dt){
     const u = a.flightT/CHUTE_FLIGHT_DUR;
     a.x = lerp(cx - r*1.15, cx + r*1.15, u);
     a.y = lerp(a.flightY0, a.flightY1, u) - Math.sin(u*Math.PI)*r*0.12;
-    a.scale = lerp(ALIEN_TRACK2_SCALE, ALIEN_TRACK2_SCALE*0.4, u);   // out beyond the wall: no bigger than in the chute
+    a.scale = chuteScaleOf(a)*lerp(1, 0.4, u);   // out beyond the wall: no bigger than in the chute
     a.rot += a.spin*dt;
     a.opacity = u>0.8 ? clamp((1-u)/0.2, 0, 1) : 1;
     // Speak up once it's properly in view, and be done talking by the time it's gone.
@@ -4275,6 +4317,8 @@ function update(){
         // balancing: a slow wobble that tips toward the direction of travel
         r.rot += Math.sin(state.t*2.1 + r.phase)*dt*0.6;
       }
+    } else if(CHUTE_STATES.has(r.state)){
+      updateChuteBody(r, dt);
     } else if(r.state==='ejected'){
       r.x += r.evx*dt; r.y += r.evy*dt;
       r.evx *= 1.01; r.evy = r.evy*1.01 - 26*dt;
@@ -4530,7 +4574,7 @@ function update(){
         a.y = a.baseY + Math.sin(state.t*1.4+a.phase)*1.5;
       }
     } else if(a.state==='chute' || a.state==='launching' || a.state==='spaced'){
-      updateChuteAlien(a, dt);
+      updateChuteBody(a, dt);
     } else if(a.state==='ejected'){
       a.x += a.evx*dt; a.y += a.evy*dt;
       a.evx *= 1.01; a.evy = a.evy*1.01 - 26*dt;
@@ -4816,7 +4860,7 @@ function drawBay(windowView){
   drawAlienList(state.aliens.filter(isFarTrackAlien));
   drawBarrels();
   if(state.held) drawBeams();
-  drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone' && r.state!=='carried'));
+  drawRockList(state.rocks.filter(r=>r.state!=='floating' && r.state!=='ejected' && r.state!=='gone' && r.state!=='carried' && r.state!=='boxed' && !CHUTE_STATES.has(r.state)));
   const floorAliens = state.aliens.filter(a=> !OFF_FLOOR_ALIEN_STATES.has(a.state) && !isArmLayerAlien(a) && a.walkPhase!=='hiding' && !isFarTrackAlien(a));
   drawAlienList(floorAliens, true);
   // a carried rock whose carrier isn't drawn with them (rare) still shows, on top as before
@@ -4884,7 +4928,7 @@ function drawIrisWindow(view){
   drawPlumes(view);
 
   if(view>=1){
-    drawRockList(state.rocks.filter(r=>r.state==='floating' || r.state==='ejected'));
+    drawRockList(state.rocks.filter(r=>r.state==='floating' || r.state==='ejected' || r.state==='spaced'));
     drawAlienList(state.aliens.filter(a=>a.state==='floating' || a.state==='ejected' || a.state==='spaced'));
     drawForceField();
   }
@@ -5248,7 +5292,8 @@ function drawChute(){
   if(occ.length){
     ctx.save();
     ctx.beginPath(); ctx.rect(x0,y0,c.w,c.h); ctx.clip();
-    drawAlienList(occ);
+    drawRockList(occ.filter(o=>!o.isAlien));
+    drawAlienList(occ.filter(o=>o.isAlien));
     ctx.restore();
   }
   // glass front: a tint, two highlight streaks, a cyan edge; white flash on launch
